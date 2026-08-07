@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
 	"github.com/fsnotify/fsnotify"
@@ -91,13 +92,20 @@ func download(rawURL, target string) error {
 
 func openFile(agentConfig config.Config, mode, path string) error {
 	if rule, found := agentConfig.ResolveOpenRule(mode, filepath.Base(path)); found {
-		arguments := make([]string, len(rule.Command)-1)
-		for index, argument := range rule.Command[1:] {
-			arguments[index] = strings.ReplaceAll(argument, "{file}", path)
-		}
-		return exec.Command(rule.Command[0], arguments...).Start()
+		return launch(rule.Command, path)
+	}
+	if application, found := appfinder.ForFile(filepath.Base(path)); found {
+		return launch(application.Command, path)
 	}
 	return openDefault(path)
+}
+
+func launch(command []string, path string) error {
+	arguments := make([]string, len(command)-1)
+	for index, argument := range command[1:] {
+		arguments[index] = strings.ReplaceAll(argument, "{file}", path)
+	}
+	return exec.Command(command[0], arguments...).Start()
 }
 
 func openDefault(path string) error {

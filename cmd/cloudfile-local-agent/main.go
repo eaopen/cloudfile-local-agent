@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
@@ -62,7 +63,7 @@ func main() {
 func handleNativeMessage(request nativehost.Request) nativehost.Response {
 	switch request.Type {
 	case "status":
-		return nativehost.Response{OK: true, Version: version}
+		return nativehost.Response{OK: true, Version: version, Applications: appfinder.Names()}
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}

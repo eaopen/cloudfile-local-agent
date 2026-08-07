@@ -18,9 +18,10 @@ type Request struct {
 }
 
 type Response struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
-	Version string `json:"version,omitempty"`
+	OK           bool     `json:"ok"`
+	Error        string   `json:"error,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Applications []string `json:"applications,omitempty"`
 }
 
 func (r Request) Valid() bool {

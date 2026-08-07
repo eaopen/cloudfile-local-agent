@@ -1,6 +1,6 @@
 # CloudFile Local Agent
 
-一个 Go 绿色 Native Messaging Host，用于领取 CloudFile 的短时会话、在隔离工作区下载文件，并交给本机默认应用查看或编辑。
+一个 Go 绿色 Native Messaging Host，用于领取 CloudFile 的短时会话、在隔离工作区下载文件，并交给本机已安装的软件查看或编辑。
 
 ## 安装与启动
 
@@ -16,7 +16,18 @@ Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native
 
 ## 本地查看与编辑规则
 
-规则只保存于当前用户的 Agent 配置文件：Windows 为
+**首次使用只需信任 CloudFile origin，不必配置应用路径。** Agent 按以下顺序打开文件：
+
+1. 用户自定义的 `open_rules`；
+2. 自动检测到的已安装软件；
+3. 操作系统默认文件关联。
+
+自动检测覆盖 Microsoft Word/Excel/PowerPoint/Visio、LibreOffice、AutoCAD、BricsCAD、
+DraftSight、Revit、SOLIDWORKS、Creo、NX、CATIA、SketchUp、Rhino 和 FreeCAD 的常见 Office、
+CAD/三维格式。Windows 优先检查用户/机器注册的 `App Paths`，再检查常见安装目录与可执行文件；
+不读取浏览器数据，也不从服务端接收软件路径。
+
+只有需要指定特定专业软件或覆盖默认顺序时才加入 `open_rules`。规则保存于当前用户的 Agent 配置文件：Windows 为
 `%AppData%\\CloudFileLocal\\config.json`，macOS/Linux 使用系统用户配置目录下的
 `CloudFileLocal/config.json`。先用安装脚本或 `--allow-origin` 创建信任 origin，再按需要
 加入 `open_rules`；`--validate-config` 可在不启动会话时检查配置。
@@ -43,8 +54,8 @@ Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native
 ```
 
 规则按顺序匹配，具体扩展名应位于通配规则之前。`command[0]` 必须是本机绝对路径，且整个
-命令只能有一个 `{file}` 占位符；Agent 使用进程参数直接启动，不经过 shell。没有命中规则
-时才回退到系统默认程序。远端 `.cloudfile` 会话从不携带程序路径、命令行或规则。
+命令只能有一个 `{file}` 占位符；Agent 使用进程参数直接启动，不经过 shell。远端
+`.cloudfile` 会话从不携带程序路径、命令行或规则。
 
 ## 安全模型
 
