@@ -1,28 +1,24 @@
 # CloudFile Local Agent
 
-一个仅在本机运行的 Node.js 服务，供 CloudFile Local Console Chrome 扩展管理受限目录内的项目和任务队列。
+一个 Go 绿色 Native Messaging Host，用于领取 CloudFile 的短时会话、在隔离工作区下载文件，并交给本机默认应用查看或编辑。
 
 ## 安装与启动
 
-需要 Node.js 20 或更高版本。
+需要 Go 1.24 以上才能从源码构建；发布包是无运行时依赖的单文件二进制。
 
 ```bash
-export CLOUDFILE_AGENT_TOKEN='replace-with-a-long-random-token'
-export CLOUDFILE_AGENT_ROOT='/absolute/path/you/want-to-share'
-npm test
-npm start
+go test ./...
+go build -trimpath -ldflags="-s -w" -o dist/cloudfile-local-agent ./cmd/cloudfile-local-agent
+./dist/cloudfile-local-agent --allow-origin https://cloudfile.example
 ```
 
-服务默认监听 `http://127.0.0.1:4317`。通过 `CLOUDFILE_AGENT_PORT` 和 `CLOUDFILE_AGENT_HOST` 可调整监听地址；`CLOUDFILE_AGENT_HOST` 应保持回环地址。
+Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native Messaging Host 注册表项；不需要管理员权限，也不开放 localhost HTTP 服务。
 
 ## 安全模型
 
-- 每个 API 请求都必须带有相同的 Bearer 配对令牌。
-- 项目目录必须已经存在，并且只能位于 `CLOUDFILE_AGENT_ROOT` 内。
-- 状态以原子方式保存到 `data/state.json`，文件权限为 `0600`。
+- 仅接收 `cloudfile-local/v2` 会话文件；会话文件只包含短期单次领取票据。
+- 每个 CloudFile origin 都须由用户/安装脚本显式加入本地信任列表。
+- Native Host manifest 精确指定正式扩展 ID；不使用通配 origin 或浏览器 Cookie。
+- 每个会话拥有独立工作区；本地编辑使用短时 write-back capability。
 
-与 Chrome 扩展配对时，在扩展设置页填入 `http://127.0.0.1:4317` 和相同令牌即可。
-
-## 任务状态
-
-任务由扩展显式推进：`queued → working → done`。任何尚未结束的任务可以取消；已结束的任务不能重新打开，避免历史状态被意外覆盖。当前 Agent 负责安全地保存和分发任务状态，实际执行器可在后续接入该队列。
+Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Host；真正的内容能力由 Agent 直接向 CloudFile Hub 领取。
