@@ -12,6 +12,7 @@ import (
 )
 
 const Protocol = "cloudfile-local/v2"
+const maxDescriptorBytes = 1024 * 1024
 
 type Descriptor struct {
 	Protocol  string `json:"protocol"`
@@ -40,6 +41,13 @@ type Claimed struct {
 }
 
 func Read(path string) (Descriptor, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return Descriptor{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxDescriptorBytes {
+		return Descriptor{}, fmt.Errorf("invalid CloudFile session file")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Descriptor{}, err
@@ -81,8 +89,17 @@ func Claim(descriptor Descriptor) (Claimed, error) {
 	if err := json.NewDecoder(response.Body).Decode(&claimed); err != nil {
 		return Claimed{}, err
 	}
-	if claimed.SessionID == "" || claimed.File.ContentURL == "" || claimed.ExpiresAt <= time.Now().Unix() {
+	if claimed.SessionID == "" || claimed.File.Name == "" || claimed.File.ContentURL == "" || claimed.ExpiresAt <= time.Now().Unix() {
 		return Claimed{}, fmt.Errorf("session claim response is invalid")
+	}
+	if claimed.Mode != "local-view" && claimed.Mode != "local-edit" {
+		return Claimed{}, fmt.Errorf("session claim returned an unsupported mode")
+	}
+	if claimed.Mode == "local-edit" && claimed.Writeback == nil {
+		return Claimed{}, fmt.Errorf("editing session is missing write-back capability")
+	}
+	if claimed.Mode == "local-view" && claimed.Writeback != nil {
+		return Claimed{}, fmt.Errorf("viewing session unexpectedly permits write-back")
 	}
 	if !sameOrigin(descriptor.Server, claimed.File.ContentURL) ||
 		(claimed.Writeback != nil && (!sameOrigin(descriptor.Server, claimed.Writeback.ContentURL) || !sameOrigin(descriptor.Server, claimed.Writeback.HeartbeatURL))) {

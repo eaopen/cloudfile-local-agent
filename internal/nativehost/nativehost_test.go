@@ -42,3 +42,12 @@ func TestServeUsesChromeLengthPrefixedMessages(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
+
+func TestRequestOnlyAcceptsCloudFileSessionPaths(t *testing.T) {
+	if !(Request{Type: "open_session_file", Path: `C:\\Downloads\\plan.cloudfile`}).Valid() {
+		t.Fatal("expected a session file request to be valid")
+	}
+	if (Request{Type: "open_session_file", Path: `C:\\Downloads\\plan.txt`}).Valid() {
+		t.Fatal("non-session files must be rejected")
+	}
+}

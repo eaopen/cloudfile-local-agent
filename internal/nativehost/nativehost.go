@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 )
 
 const maxMessageBytes = 1024 * 1024
@@ -19,6 +21,14 @@ type Response struct {
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
 	Version string `json:"version,omitempty"`
+}
+
+func (r Request) Valid() bool {
+	if r.Type == "status" {
+		return r.Path == ""
+	}
+	return r.Type == "open_session_file" && r.Path != "" &&
+		strings.EqualFold(filepath.Ext(r.Path), ".cloudfile")
 }
 
 func Serve(input io.Reader, output io.Writer, handle func(Request) Response) error {
@@ -41,6 +51,8 @@ func Serve(input io.Reader, output io.Writer, handle func(Request) Response) err
 		request := Request{}
 		response := Response{}
 		if err := json.Unmarshal(payload, &request); err != nil {
+			response = Response{Error: "invalid native message"}
+		} else if !request.Valid() {
 			response = Response{Error: "invalid native message"}
 		} else {
 			response = handle(request)

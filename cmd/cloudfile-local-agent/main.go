@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,17 +12,33 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
+	showConfig := flag.Bool("show-config", false, "print local configuration")
+	validateConfig := flag.Bool("validate-config", false, "validate local configuration")
 	flag.Parse()
 
 	if *allowOrigin != "" {
 		if _, err := config.AddOrigin(*allowOrigin); err != nil {
 			fail(err)
+		}
+		return
+	}
+	if *showConfig || *validateConfig {
+		agentConfig, err := config.Load()
+		if err != nil {
+			fail(err)
+		}
+		if *showConfig {
+			data, err := json.MarshalIndent(agentConfig, "", "  ")
+			if err != nil {
+				fail(err)
+			}
+			fmt.Println(string(data))
 		}
 		return
 	}
@@ -47,8 +64,8 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 	case "status":
 		return nativehost.Response{OK: true, Version: version}
 	case "open_session_file":
-		if request.Path == "" {
-			return nativehost.Response{Error: "session file path is required"}
+		if !request.Valid() {
+			return nativehost.Response{Error: "invalid session file path"}
 		}
 		executable, err := os.Executable()
 		if err != nil {

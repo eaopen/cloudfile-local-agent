@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
@@ -42,14 +42,18 @@ func Run(path string) error {
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		return err
 	}
-	localPath := filepath.Join(workspace, filepath.Base(claimed.File.Name))
+	name := filepath.Base(claimed.File.Name)
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		return fmt.Errorf("session returned an invalid file name")
+	}
+	localPath := filepath.Join(workspace, name)
 	if err := download(claimed.File.ContentURL, localPath); err != nil {
 		return err
 	}
 	if claimed.Mode == "local-view" {
 		_ = os.Chmod(localPath, 0400)
 	}
-	if err := openDefault(localPath); err != nil {
+	if err := openFile(config, claimed.Mode, localPath); err != nil {
 		return err
 	}
 	if claimed.Mode == "local-edit" && claimed.Writeback != nil {
@@ -72,8 +76,28 @@ func download(rawURL, target string) error {
 		return err
 	}
 	defer file.Close()
-	_, err = io.Copy(file, io.LimitReader(response.Body, 4*1024*1024*1024))
-	return err
+	const maxDownloadBytes = 4 * 1024 * 1024 * 1024
+	written, err := io.Copy(file, io.LimitReader(response.Body, maxDownloadBytes+1))
+	if err != nil {
+		_ = os.Remove(target)
+		return err
+	}
+	if written > maxDownloadBytes {
+		_ = os.Remove(target)
+		return fmt.Errorf("file exceeds the local download limit")
+	}
+	return nil
+}
+
+func openFile(agentConfig config.Config, mode, path string) error {
+	if rule, found := agentConfig.ResolveOpenRule(mode, filepath.Base(path)); found {
+		arguments := make([]string, len(rule.Command)-1)
+		for index, argument := range rule.Command[1:] {
+			arguments[index] = strings.ReplaceAll(argument, "{file}", path)
+		}
+		return exec.Command(rule.Command[0], arguments...).Start()
+	}
+	return openDefault(path)
 }
 
 func openDefault(path string) error {
@@ -102,14 +126,24 @@ func waitForStableChange(path string, writeback session.Writeback, expires time.
 	defer deadline.Stop()
 	heartbeat := time.NewTicker(5 * time.Minute)
 	defer heartbeat.Stop()
+	stabilityCheck := time.NewTicker(time.Second)
+	defer stabilityCheck.Stop()
 	var changedAt time.Time
 	for {
 		select {
-		case event := <-watcher.Events:
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return fmt.Errorf("file watcher stopped unexpectedly")
+			}
 			if event.Name == path && event.Op&(fsnotify.Write|fsnotify.Rename) != 0 {
 				changedAt = time.Now()
 			}
-		case <-time.After(time.Second):
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return fmt.Errorf("file watcher stopped unexpectedly")
+			}
+			return fmt.Errorf("watch local file: %w", err)
+		case <-stabilityCheck.C:
 			if !changedAt.IsZero() && time.Since(changedAt) >= 3*time.Second {
 				return upload(path, writeback)
 			}
@@ -146,19 +180,25 @@ func upload(path string, writeback session.Writeback) error {
 		return err
 	}
 	defer file.Close()
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
-	part, err := form.CreateFormFile("file", filepath.Base(path))
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return err
-	}
-	if err := form.Close(); err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPut, writeback.ContentURL, &body)
+	reader, writer := io.Pipe()
+	form := multipart.NewWriter(writer)
+	writeDone := make(chan error, 1)
+	go func() {
+		defer writer.Close()
+		part, err := form.CreateFormFile("file", filepath.Base(path))
+		if err == nil {
+			_, err = io.Copy(part, file)
+		}
+		if closeErr := form.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = writer.CloseWithError(err)
+		}
+		writeDone <- err
+	}()
+	defer reader.Close()
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPut, writeback.ContentURL, reader)
 	if err != nil {
 		return err
 	}
@@ -169,6 +209,9 @@ func upload(path string, writeback session.Writeback) error {
 		return err
 	}
 	defer response.Body.Close()
+	if err := <-writeDone; err != nil {
+		return err
+	}
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("file write-back failed (%d)", response.StatusCode)
 	}
