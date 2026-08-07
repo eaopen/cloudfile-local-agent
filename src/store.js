@@ -48,9 +48,34 @@ export class Store {
       status: 'queued',
       createdAt: new Date().toISOString(),
     };
+    task.updatedAt = task.createdAt;
     this.state.tasks.push(task);
     project.updatedAt = task.createdAt;
     await this.save();
     return task;
+  }
+
+  listTasks(projectId) {
+    const tasks = projectId
+      ? this.state.tasks.filter((entry) => entry.projectId === projectId)
+      : this.state.tasks;
+    return [...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async updateTaskStatus(id, status) {
+    const task = this.state.tasks.find((entry) => entry.id === id);
+    if (!task) return { error: 'not_found' };
+    const transitions = {
+      queued: ['working', 'cancelled'],
+      working: ['done', 'failed', 'cancelled'],
+      done: [],
+      failed: [],
+      cancelled: [],
+    };
+    if (!transitions[task.status]?.includes(status)) return { error: 'invalid_transition' };
+    task.status = status;
+    task.updatedAt = new Date().toISOString();
+    await this.save();
+    return { task };
   }
 }

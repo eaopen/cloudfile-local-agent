@@ -43,7 +43,7 @@ export function createAgentServer(config, store) {
   return createServer(async (request, response) => {
     try {
       if (request.method === 'OPTIONS') {
-        response.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'GET, POST, OPTIONS' });
+        response.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'GET, POST, PATCH, OPTIONS' });
         return response.end();
       }
       if (!validToken(request.headers.authorization?.replace(/^Bearer\s+/i, ''), config.token)) {
@@ -55,6 +55,10 @@ export function createAgentServer(config, store) {
       }
       if (request.method === 'GET' && url.pathname === '/v1/projects') {
         return json(response, 200, { projects: store.listProjects() });
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/tasks') {
+        const projectId = url.searchParams.get('projectId') ?? undefined;
+        return json(response, 200, { tasks: store.listTasks(projectId) });
       }
       if (request.method === 'POST' && url.pathname === '/v1/projects') {
         const project = validateProject(await readJson(request), config);
@@ -69,6 +73,17 @@ export function createAgentServer(config, store) {
         }
         const task = await store.createTask({ projectId, prompt: prompt.trim() });
         return task ? json(response, 201, { task }) : json(response, 404, { error: 'Project not found' });
+      }
+      const taskMatch = url.pathname.match(/^\/v1\/tasks\/([a-f0-9-]+)$/i);
+      if (request.method === 'PATCH' && taskMatch) {
+        const { status } = await readJson(request);
+        if (!['working', 'done', 'failed', 'cancelled'].includes(status)) {
+          return json(response, 400, { error: 'Unsupported task status' });
+        }
+        const result = await store.updateTaskStatus(taskMatch[1], status);
+        if (result.error === 'not_found') return json(response, 404, { error: 'Task not found' });
+        if (result.error === 'invalid_transition') return json(response, 409, { error: 'Task status transition is not allowed' });
+        return json(response, 200, result);
       }
       return json(response, 404, { error: 'not_found' });
     } catch (error) {

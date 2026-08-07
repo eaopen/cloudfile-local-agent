@@ -41,7 +41,14 @@ test('creates a project only within the shared root and queues a task', async ()
   const { project } = await created.json();
   const task = await call('/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectId: project.id, prompt: 'Index this folder' }) });
   assert.equal(task.status, 201);
-  assert.equal((await task.json()).task.status, 'queued');
+  const createdTask = (await task.json()).task;
+  assert.equal(createdTask.status, 'queued');
+  const working = await call(`/v1/tasks/${createdTask.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'working' }) });
+  assert.equal(working.status, 200);
+  const done = await call(`/v1/tasks/${createdTask.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'done' }) });
+  assert.equal(done.status, 200);
+  const immutable = await call(`/v1/tasks/${createdTask.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'working' }) });
+  assert.equal(immutable.status, 409);
   const rejected = await call('/v1/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Elsewhere', rootPath: os.tmpdir() }) });
   assert.equal(rejected.status, 400);
 });
