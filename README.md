@@ -1,6 +1,13 @@
 # CloudFile Local Agent
 
+> 用途：说明 CloudFile 本地查看/编辑 Native Messaging Host 的构建、配置和安全边界
+> 适用版本：Seafile CE 14 扩展版；Agent 协议 `cloudfile-local/v2`
+> 当前状态：验证中；代码与单元测试存在，跨平台签名发布包和全链路验收待完成
+
 一个 Go 绿色 Native Messaging Host，用于领取 CloudFile 的短时会话、在隔离工作区下载文件，并交给本机已安装的软件查看或编辑。
+
+本 Agent 属于 CloudFile 的新应用扩展，不是 Seafile CE 或 Authentik 的组成部分。整体能力
+状态、依赖和限制见[扩展能力矩阵](../cloudfile-docker/docs/feature-matrix.md)。
 
 ## 安装与启动
 
