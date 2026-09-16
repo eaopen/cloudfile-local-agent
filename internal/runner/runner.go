@@ -24,18 +24,25 @@ func Run(path string) error {
 	if err != nil {
 		return err
 	}
-	config, err := config.Load()
+	return RunDescriptor(descriptor)
+}
+
+// RunDescriptor drives a full session from an already-parsed descriptor.  It is
+// shared by the file path (Run) and the extension-message path, so the security
+// gates (origin allow-list, one-time ticket claim) are identical for both.
+func RunDescriptor(descriptor session.Descriptor) error {
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	if !config.Allows(descriptor.Server) {
+	if !cfg.Allows(descriptor.Server) {
 		return fmt.Errorf("the CloudFile origin is not trusted by this agent")
 	}
 	claimed, err := session.Claim(descriptor)
 	if err != nil {
 		return err
 	}
-	root, err := config.Root()
+	root, err := cfg.Root()
 	if err != nil {
 		return err
 	}
@@ -54,7 +61,7 @@ func Run(path string) error {
 	if claimed.Mode == "local-view" {
 		_ = os.Chmod(localPath, 0400)
 	}
-	if err := openFile(config, claimed.Mode, localPath); err != nil {
+	if err := openFile(cfg, claimed.Mode, localPath); err != nil {
 		return err
 	}
 	if claimed.Mode == "local-edit" && claimed.Writeback != nil {
@@ -143,7 +150,11 @@ func waitForStableChange(path string, writeback session.Writeback, expires time.
 			if !ok {
 				return fmt.Errorf("file watcher stopped unexpectedly")
 			}
-			if event.Name == path && event.Op&(fsnotify.Write|fsnotify.Rename) != 0 {
+			// Write 覆盖「直接写」；Rename 覆盖「旧文件被移走」；Create 覆盖
+			// rename 原子替换保存时「新文件就位」的动作（Windows
+			// RENAMED_NEW_NAME 被 fsnotify 映射为 Create）。缺了 Create 会
+			// 漏掉 Word/WPS/Excel 这类「写临时文件再 rename 覆盖」的保存。
+			if event.Name == path && event.Op&(fsnotify.Write|fsnotify.Rename|fsnotify.Create) != 0 {
 				changedAt = time.Now()
 			}
 		case err, ok := <-watcher.Errors:

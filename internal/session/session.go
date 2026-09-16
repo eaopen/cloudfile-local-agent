@@ -52,6 +52,16 @@ func Read(path string) (Descriptor, error) {
 	if err != nil {
 		return Descriptor{}, err
 	}
+	return Parse(data)
+}
+
+// Parse validates raw descriptor bytes.  It is shared by the file-based path
+// (Read) and the extension-message path (agent receives the descriptor inline
+// via stdin instead of a .cloudfile download).
+func Parse(data []byte) (Descriptor, error) {
+	if len(data) > maxDescriptorBytes {
+		return Descriptor{}, fmt.Errorf("invalid CloudFile session file")
+	}
 	var descriptor Descriptor
 	if err := json.Unmarshal(data, &descriptor); err != nil {
 		return Descriptor{}, fmt.Errorf("invalid CloudFile session file: %w", err)

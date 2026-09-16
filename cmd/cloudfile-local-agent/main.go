@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
+	"github.com/eaopen/cloudfile-local-agent/internal/session"
 )
 
 const version = "0.3.0"
@@ -18,6 +22,7 @@ const version = "0.3.0"
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
+	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
 	showConfig := flag.Bool("show-config", false, "print local configuration")
 	validateConfig := flag.Bool("validate-config", false, "validate local configuration")
@@ -49,6 +54,12 @@ func main() {
 		}
 		return
 	}
+	if *runSessionStdin {
+		if err := runSessionFromStdin(); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *nativeHost || flag.NFlag() == 0 {
 		if err := nativehost.Serve(os.Stdin, os.Stdout, handleNativeMessage); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -63,7 +74,37 @@ func main() {
 func handleNativeMessage(request nativehost.Request) nativehost.Response {
 	switch request.Type {
 	case "status":
-		return nativehost.Response{OK: true, Version: version, Applications: appfinder.Names()}
+		response := nativehost.Response{
+			OK:           true,
+			Version:      version,
+			Applications: appfinder.Names(),
+		}
+		if agentConfig, err := config.Load(); err == nil {
+			if root, err := agentConfig.Root(); err == nil {
+				response.WorkspaceRoot = root
+				response.CanOpenWorkspace = true
+			}
+		}
+		return response
+	case "open_workspace":
+		if !request.Valid() {
+			return nativehost.Response{Error: "invalid open_workspace request"}
+		}
+		agentConfig, err := config.Load()
+		if err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
+		root, err := agentConfig.Root()
+		if err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
+		if err := os.MkdirAll(root, 0700); err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
+		if err := openDirectory(root); err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
+		return nativehost.Response{OK: true, WorkspaceRoot: root}
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}
@@ -79,6 +120,32 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			return nativehost.Response{Error: err.Error()}
 		}
 		return nativehost.Response{OK: true}
+	case "open_session":
+		if !request.Valid() {
+			return nativehost.Response{Error: "invalid session descriptor"}
+		}
+		descriptor := session.Descriptor{
+			Protocol:  request.Protocol,
+			Server:    request.Server,
+			Ticket:    request.Ticket,
+			ExpiresAt: request.ExpiresAt,
+		}
+		data, err := json.Marshal(descriptor)
+		if err != nil {
+			return nativehost.Response{Error: "cannot encode session descriptor"}
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return nativehost.Response{Error: "cannot start local agent"}
+		}
+		command := exec.Command(executable, "--run-session-stdin")
+		command.Stdin = strings.NewReader(string(data))
+		command.Stdout = nil
+		command.Stderr = os.Stderr
+		if err := command.Start(); err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
+		return nativehost.Response{OK: true}
 	default:
 		return nativehost.Response{Error: "unsupported native message"}
 	}
@@ -87,4 +154,29 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "CloudFile Local Agent:", err)
 	os.Exit(1)
+}
+
+func openDirectory(path string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		command = exec.Command("explorer.exe", path)
+	case "darwin":
+		command = exec.Command("open", path)
+	default:
+		command = exec.Command("xdg-open", path)
+	}
+	return command.Start()
+}
+
+func runSessionFromStdin() error {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+	descriptor, err := session.Parse(data)
+	if err != nil {
+		return err
+	}
+	return runner.RunDescriptor(descriptor)
 }

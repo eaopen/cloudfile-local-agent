@@ -13,20 +13,34 @@ import (
 const maxMessageBytes = 1024 * 1024
 
 type Request struct {
-	Type string `json:"type"`
-	Path string `json:"path,omitempty"`
+	Type      string `json:"type"`
+	Path      string `json:"path,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	Server    string `json:"server,omitempty"`
+	Ticket    string `json:"ticket,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
 }
 
 type Response struct {
-	OK           bool     `json:"ok"`
-	Error        string   `json:"error,omitempty"`
-	Version      string   `json:"version,omitempty"`
-	Applications []string `json:"applications,omitempty"`
+	OK                bool     `json:"ok"`
+	Error             string   `json:"error,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Applications      []string `json:"applications,omitempty"`
+	WorkspaceRoot     string   `json:"workspace_root,omitempty"`
+	CanOpenWorkspace  bool     `json:"can_open_workspace,omitempty"`
 }
 
 func (r Request) Valid() bool {
 	if r.Type == "status" {
 		return r.Path == ""
+	}
+	if r.Type == "open_workspace" {
+		return r.Path == "" && r.Protocol == "" && r.Server == "" &&
+			r.Ticket == "" && r.ExpiresAt == 0
+	}
+	if r.Type == "open_session" {
+		return r.Path == "" && r.Protocol != "" && r.Server != "" &&
+			r.Ticket != "" && r.ExpiresAt > 0
 	}
 	return r.Type == "open_session_file" && r.Path != "" &&
 		strings.EqualFold(filepath.Ext(r.Path), ".cloudfile")
