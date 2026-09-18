@@ -1,20 +1,25 @@
 param(
   [Parameter(Mandatory = $true)][string]$ExtensionId,
   [Parameter(Mandatory = $true)][string]$ServerOrigin,
+  [string]$UpdateSource = "",
   [string]$BinaryPath = ""
 )
 
-# 优先查找脚本所在目录（$PSScriptRoot）下的 cloudfile-local-agent.exe，
-# 找不到再找上一层目录（$PSScriptRoot\..）下的。
+# 查找脚本所在目录（$PSScriptRoot）与上一层目录（$PSScriptRoot\..）下的
+# cloudfile-local-agent 版本号化二进制（cloudfile-local-agent-<x.y.z>.exe）。
+function Find-AgentBinary([string]$dir) {
+  if (-not $dir) { return $null }
+  $versioned = Get-ChildItem -LiteralPath $dir -Filter "cloudfile-local-agent-*.exe" -File -ErrorAction SilentlyContinue |
+    Sort-Object Name -Descending | Select-Object -First 1
+  if ($versioned) { return (Resolve-Path -LiteralPath $versioned.FullName).Path }
+  return $null
+}
+
 if ($BinaryPath -eq "") {
-  $local = Join-Path $PSScriptRoot "cloudfile-local-agent.exe"
-  $parent = Join-Path $PSScriptRoot "..\cloudfile-local-agent.exe"
-  if (Test-Path -LiteralPath $local) {
-    $BinaryPath = (Resolve-Path -LiteralPath $local).Path
-  } elseif (Test-Path -LiteralPath $parent) {
-    $BinaryPath = (Resolve-Path -LiteralPath $parent).Path
-  } else {
-    Write-Error "未找到 cloudfile-local-agent.exe：脚本目录($PSScriptRoot)与上一层目录均不存在该文件，请用 -BinaryPath 指定。"
+  $BinaryPath = Find-AgentBinary $PSScriptRoot
+  if (-not $BinaryPath) { $BinaryPath = Find-AgentBinary (Join-Path $PSScriptRoot "..") }
+  if (-not $BinaryPath) {
+    Write-Error "未找到 cloudfile-local-agent-<version>.exe：脚本目录($PSScriptRoot)与上一层目录均不存在该文件，请用 -BinaryPath 指定。"
     exit 1
   }
 } elseif (-not (Test-Path -LiteralPath $BinaryPath)) {
@@ -30,6 +35,14 @@ New-Item -ItemType Directory -Force -Path $root | Out-Null
 if ($LASTEXITCODE -ne 0) {
   Write-Error "执行 --allow-origin 失败：$BinaryPath"
   exit 1
+}
+
+if ($UpdateSource -ne "") {
+  & $BinaryPath --set-update-source $UpdateSource
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "执行 --set-update-source 失败：$BinaryPath"
+    exit 1
+  }
 }
 
 @{

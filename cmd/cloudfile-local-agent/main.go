@@ -15,21 +15,31 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
+	"github.com/eaopen/cloudfile-local-agent/internal/update"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
+	setUpdateSource := flag.String("set-update-source", "", "record the static update.json URL")
 	showConfig := flag.Bool("show-config", false, "print local configuration")
 	validateConfig := flag.Bool("validate-config", false, "validate local configuration")
+	checkUpdate := flag.Bool("check-update", false, "check for and report an available update")
+	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	flag.Parse()
 
 	if *allowOrigin != "" {
 		if _, err := config.AddOrigin(*allowOrigin); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *setUpdateSource != "" {
+		if _, err := config.SetUpdateSource(*setUpdateSource); err != nil {
 			fail(err)
 		}
 		return
@@ -60,6 +70,12 @@ func main() {
 		}
 		return
 	}
+	if *checkUpdate || *applyUpdate {
+		if err := runUpdate(*applyUpdate); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *nativeHost || flag.NFlag() == 0 {
 		if err := nativehost.Serve(os.Stdin, os.Stdout, handleNativeMessage); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -83,6 +99,15 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			if root, err := agentConfig.Root(); err == nil {
 				response.WorkspaceRoot = root
 				response.CanOpenWorkspace = true
+			}
+			response.UpdateSourceSet = agentConfig.UpdateSource != ""
+			if agentConfig.UpdateSource != "" {
+				if manifest, err := update.Fetch(agentConfig.UpdateSource); err == nil {
+					if comparison, err := update.Compare(manifest.Version, version); err == nil && comparison > 0 {
+						response.UpdateAvailable = true
+						response.LatestVersion = manifest.Version
+					}
+				}
 			}
 		}
 		return response
@@ -179,4 +204,43 @@ func runSessionFromStdin() error {
 		return err
 	}
 	return runner.RunDescriptor(descriptor)
+}
+
+// runUpdate drives the --check-update / --update commands. With apply=false it
+// only reports whether an update is available; with apply=true it downloads,
+// verifies and installs it.
+func runUpdate(apply bool) error {
+	agentConfig, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if agentConfig.UpdateSource == "" {
+		return fmt.Errorf("update source is not configured (set update_source in config.json)")
+	}
+	manifest, err := update.Fetch(agentConfig.UpdateSource)
+	if err != nil {
+		return err
+	}
+	comparison, err := update.Compare(manifest.Version, version)
+	if err != nil {
+		return fmt.Errorf("update manifest has invalid version %q: %w", manifest.Version, err)
+	}
+	if comparison <= 0 {
+		fmt.Printf("CloudFile Local Agent %s is up to date (latest %s)\n", version, manifest.Version)
+		return nil
+	}
+	if !apply {
+		fmt.Printf("update available: %s -> %s\n", version, manifest.Version)
+		if manifest.Notes != "" {
+			fmt.Println(manifest.Notes)
+		}
+		return nil
+	}
+	newBinary, err := update.Apply(agentConfig.UpdateSource, manifest)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("updated to %s (%s)\n", manifest.Version, newBinary)
+	fmt.Println("restart Chrome (or reload the extension) to pick up the new agent.")
+	return nil
 }

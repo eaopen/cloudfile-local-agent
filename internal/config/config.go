@@ -12,6 +12,7 @@ import (
 type Config struct {
 	AllowedOrigins []string   `json:"allowed_origins"`
 	WorkspaceRoot  string     `json:"workspace_root"`
+	UpdateSource   string     `json:"update_source,omitempty"`
 	OpenRules      []OpenRule `json:"open_rules"`
 }
 
@@ -79,6 +80,12 @@ func (c Config) Validate() error {
 		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") ||
 			origin != strings.TrimSuffix(u.Scheme+"://"+u.Host, "/") {
 			return fmt.Errorf("invalid trusted origin: %q", origin)
+		}
+	}
+	if c.UpdateSource != "" {
+		u, err := url.Parse(c.UpdateSource)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+			return fmt.Errorf("invalid update source: %q", c.UpdateSource)
 		}
 	}
 	for index, rule := range c.OpenRules {
@@ -193,5 +200,21 @@ func AddOrigin(rawOrigin string) (Config, error) {
 		}
 	}
 	config.AllowedOrigins = append(config.AllowedOrigins, origin)
+	return config, Save(config)
+}
+
+// SetUpdateSource records the static update.json URL in the local config. It
+// merges with the existing config (does not clobber allowed_origins or rules),
+// mirroring AddOrigin so the install script stays a thin wrapper.
+func SetUpdateSource(rawSource string) (Config, error) {
+	u, err := url.Parse(rawSource)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return Config{}, fmt.Errorf("update source must be an http or https URL")
+	}
+	config, err := Load()
+	if err != nil {
+		return Config{}, err
+	}
+	config.UpdateSource = strings.TrimRight(rawSource, "/")
 	return config, Save(config)
 }

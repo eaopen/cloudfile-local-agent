@@ -22,12 +22,15 @@ type Request struct {
 }
 
 type Response struct {
-	OK                bool     `json:"ok"`
-	Error             string   `json:"error,omitempty"`
-	Version           string   `json:"version,omitempty"`
-	Applications      []string `json:"applications,omitempty"`
-	WorkspaceRoot     string   `json:"workspace_root,omitempty"`
-	CanOpenWorkspace  bool     `json:"can_open_workspace,omitempty"`
+	OK               bool     `json:"ok"`
+	Error            string   `json:"error,omitempty"`
+	Version          string   `json:"version,omitempty"`
+	Applications     []string `json:"applications,omitempty"`
+	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
+	CanOpenWorkspace bool     `json:"can_open_workspace,omitempty"`
+	UpdateAvailable  bool     `json:"update_available,omitempty"`
+	LatestVersion    string   `json:"latest_version,omitempty"`
+	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
 }
 
 func (r Request) Valid() bool {
