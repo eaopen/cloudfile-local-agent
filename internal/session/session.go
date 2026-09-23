@@ -15,10 +15,11 @@ const Protocol = "cloudfile-local/v2"
 const maxDescriptorBytes = 1024 * 1024
 
 type Descriptor struct {
-	Protocol  string `json:"protocol"`
-	Server    string `json:"server"`
-	Ticket    string `json:"ticket"`
-	ExpiresAt int64  `json:"expires_at"`
+	Protocol    string `json:"protocol"`
+	Server      string `json:"server"`
+	Ticket      string `json:"ticket"`
+	ExpiresAt   int64  `json:"expires_at"`
+	LocalAction string `json:"local_action,omitempty"`
 }
 
 type File struct {
@@ -36,7 +37,12 @@ type Claimed struct {
 	SessionID string     `json:"session_id"`
 	Mode      string     `json:"mode"`
 	ExpiresAt int64      `json:"expires_at"`
+	RepoID    string     `json:"repo_id"`
+	Path      string     `json:"path"`
 	File      File       `json:"file"`
+	FileID    string     `json:"file_id"`
+	Size      int64      `json:"size"`
+	MTime     int64      `json:"mtime"`
 	Writeback *Writeback `json:"writeback,omitempty"`
 }
 
@@ -102,10 +108,10 @@ func Claim(descriptor Descriptor) (Claimed, error) {
 	if claimed.SessionID == "" || claimed.File.Name == "" || claimed.File.ContentURL == "" || claimed.ExpiresAt <= time.Now().Unix() {
 		return Claimed{}, fmt.Errorf("session claim response is invalid")
 	}
-	if claimed.Mode != "local-view" && claimed.Mode != "local-edit" {
+	if claimed.Mode != "local-view" && claimed.Mode != "local-edit" && claimed.Mode != "local-edit-exclusive" {
 		return Claimed{}, fmt.Errorf("session claim returned an unsupported mode")
 	}
-	if claimed.Mode == "local-edit" && claimed.Writeback == nil {
+	if claimed.Mode == "local-edit-exclusive" && claimed.Writeback == nil {
 		return Claimed{}, fmt.Errorf("editing session is missing write-back capability")
 	}
 	if claimed.Mode == "local-view" && claimed.Writeback != nil {

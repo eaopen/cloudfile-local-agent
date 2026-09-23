@@ -13,12 +13,14 @@ import (
 const maxMessageBytes = 1024 * 1024
 
 type Request struct {
-	Type      string `json:"type"`
-	Path      string `json:"path,omitempty"`
-	Protocol  string `json:"protocol,omitempty"`
-	Server    string `json:"server,omitempty"`
-	Ticket    string `json:"ticket,omitempty"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	Type        string `json:"type"`
+	Path        string `json:"path,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	Server      string `json:"server,omitempty"`
+	Ticket      string `json:"ticket,omitempty"`
+	ExpiresAt   int64  `json:"expires_at,omitempty"`
+	RepoID      string `json:"repo_id,omitempty"`
+	LocalAction string `json:"local_action,omitempty"`
 }
 
 type Response struct {
@@ -31,6 +33,11 @@ type Response struct {
 	UpdateAvailable  bool     `json:"update_available,omitempty"`
 	LatestVersion    string   `json:"latest_version,omitempty"`
 	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
+	LocalExists      bool     `json:"local_exists,omitempty"`
+	LocalPath        string   `json:"local_path,omitempty"`
+	LocalHash        string   `json:"local_hash,omitempty"`
+	LocalSize        int64    `json:"local_size,omitempty"`
+	LocalMTime       int64    `json:"local_mtime,omitempty"`
 }
 
 func (r Request) Valid() bool {
@@ -38,8 +45,11 @@ func (r Request) Valid() bool {
 		return r.Path == ""
 	}
 	if r.Type == "open_workspace" {
-		return r.Path == "" && r.Protocol == "" && r.Server == "" &&
+		return r.Protocol == "" && r.Server == "" &&
 			r.Ticket == "" && r.ExpiresAt == 0
+	}
+	if r.Type == "query_local_file" {
+		return r.RepoID != "" && r.Path != ""
 	}
 	if r.Type == "open_session" {
 		return r.Path == "" && r.Protocol != "" && r.Server != "" &&

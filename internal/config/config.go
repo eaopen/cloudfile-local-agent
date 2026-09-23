@@ -104,7 +104,7 @@ func (r OpenRule) Validate() error {
 		return fmt.Errorf("modes, extensions and command are required")
 	}
 	for _, mode := range r.Modes {
-		if mode != "local-view" && mode != "local-edit" {
+		if mode != "local-view" && mode != "local-edit" && mode != "local-edit-exclusive" {
 			return fmt.Errorf("unsupported mode %q", mode)
 		}
 	}

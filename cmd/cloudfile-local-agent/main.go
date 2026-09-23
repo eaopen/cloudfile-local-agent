@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -123,13 +124,63 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
-		if err := os.MkdirAll(root, 0700); err != nil {
+		target := root
+		if request.RepoID != "" {
+			// 打开某个库的镜像路径；Path 为空时到库级目录，否则到 Path 指向的文件/目录。
+			target = filepath.Join(root, request.RepoID, request.Path)
+		}
+		// 目标是已存在的文件 → 用 /select 在文件管理器中高亮；已存在的目录 → 直接打开；
+		// 均不存在 → 回退打开父目录（MkdirAll 保证存在）。
+		if info, statErr := os.Stat(target); statErr == nil {
+			if info.IsDir() {
+				if err := openDirectory(target); err != nil {
+					return nativehost.Response{Error: err.Error()}
+				}
+			} else {
+				if err := openDirectorySelect(target); err != nil {
+					return nativehost.Response{Error: err.Error()}
+				}
+			}
+		} else {
+			parent := filepath.Dir(target)
+			if err := os.MkdirAll(parent, 0700); err != nil {
+				return nativehost.Response{Error: err.Error()}
+			}
+			if err := openDirectory(parent); err != nil {
+				return nativehost.Response{Error: err.Error()}
+			}
+		}
+		return nativehost.Response{OK: true, WorkspaceRoot: root, LocalPath: target}
+	case "query_local_file":
+		if !request.Valid() {
+			return nativehost.Response{Error: "invalid query_local_file request"}
+		}
+		agentConfig, err := config.Load()
+		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
-		if err := openDirectory(root); err != nil {
+		root, err := agentConfig.Root()
+		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
-		return nativehost.Response{OK: true, WorkspaceRoot: root}
+		// request.Path 是含文件名的库内完整路径（如 /dir/file.dwg）。
+		localPath := filepath.Join(root, request.RepoID, request.Path)
+		info, statErr := os.Stat(localPath)
+		if statErr != nil {
+			return nativehost.Response{OK: true, LocalExists: false, LocalPath: localPath}
+		}
+		hash, hashErr := runner.Sha1File(localPath)
+		if hashErr != nil {
+			return nativehost.Response{Error: hashErr.Error()}
+		}
+		return nativehost.Response{
+			OK:          true,
+			LocalExists: true,
+			LocalPath:   localPath,
+			LocalSize:   info.Size(),
+			LocalMTime:  info.ModTime().Unix(),
+			LocalHash:   hash,
+		}
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}
@@ -150,10 +201,11 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			return nativehost.Response{Error: "invalid session descriptor"}
 		}
 		descriptor := session.Descriptor{
-			Protocol:  request.Protocol,
-			Server:    request.Server,
-			Ticket:    request.Ticket,
-			ExpiresAt: request.ExpiresAt,
+			Protocol:    request.Protocol,
+			Server:      request.Server,
+			Ticket:      request.Ticket,
+			ExpiresAt:   request.ExpiresAt,
+			LocalAction: request.LocalAction,
 		}
 		data, err := json.Marshal(descriptor)
 		if err != nil {
@@ -190,6 +242,23 @@ func openDirectory(path string) error {
 		command = exec.Command("open", path)
 	default:
 		command = exec.Command("xdg-open", path)
+	}
+	return command.Start()
+}
+
+// openDirectorySelect 打开文件所在目录并在文件管理器中高亮该文件。
+// Windows: explorer /select,<path>；macOS: open -R；其他: 回退打开父目录。
+// 用 exec.Command 单参数传参（不经 shell），路径含空格/中文均安全。
+func openDirectorySelect(path string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// /select, 与路径必须连成一个参数；否则 explorer 会忽略。
+		command = exec.Command("explorer.exe", "/select,"+path)
+	case "darwin":
+		command = exec.Command("open", "-R", path)
+	default:
+		command = exec.Command("xdg-open", filepath.Dir(path))
 	}
 	return command.Start()
 }
