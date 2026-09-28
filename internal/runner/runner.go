@@ -112,22 +112,20 @@ func localMirrorPath(root string, claimed session.Claimed) (string, error) {
 	return full, nil
 }
 
-// reuseOrDownload reuses an existing local copy when its SHA1 matches the
-// server file_id, otherwise resolves the conflict using LocalAction:
+// reuseOrDownload reuses an existing local copy according to the caller's
+// explicit action, or downloads when no local copy exists.
 //   - "overwrite": re-download the server version (discard local edits)
 //   - "keep_local": keep the local copy (edit then manually upload)
 //   - "" (unset): default to keep_local for local-edit (preserve local work),
 //     and overwrite for local-edit-exclusive (server is the source of truth).
+//
+// 注意：不能拿本地文件内容 SHA1 与 claimed.FileID 比对来判断「是否已下载」。
+// FileID 是 Seafile obj_id（文件元数据 JSON 的 SHA1），并非内容 SHA1，两者
+// 语义不同、永远不等。真正的「网盘是否被更新」判定由前端用「下载时记录的
+// fileId vs 当前 fileId」完成，这里只负责按前端决议的 action 落地。
 func reuseOrDownload(claimed session.Claimed, localPath, action string) error {
 	if _, err := os.Stat(localPath); err != nil {
 		return download(claimed.File.ContentURL, localPath)
-	}
-	hash, err := Sha1File(localPath)
-	if err != nil {
-		return err
-	}
-	if claimed.FileID != "" && strings.EqualFold(hash, claimed.FileID) {
-		return nil // already downloaded, reuse local copy
 	}
 	switch action {
 	case "overwrite":
@@ -142,8 +140,7 @@ func reuseOrDownload(claimed session.Claimed, localPath, action string) error {
 	}
 }
 
-// Sha1File returns the lowercase hex SHA1 of a file's contents, matching
-// Seafile's content-addressed file_id.
+// Sha1File returns the lowercase hex SHA1 of a file's contents.
 func Sha1File(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
