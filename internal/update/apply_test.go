@@ -54,7 +54,7 @@ func TestApplyEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Installed binary has the versioned name.
-	if filepath.Base(installed) != "cloudfile-local-agent-0.4.0.exe" {
+	if filepath.Base(installed) != versionedName("0.4.0") {
 		t.Fatalf("unexpected installed path %q", installed)
 	}
 	data, err := os.ReadFile(installed)

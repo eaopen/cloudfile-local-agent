@@ -1,12 +1,10 @@
 package runner
 
 import (
-	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,7 +16,6 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
-	"github.com/fsnotify/fsnotify"
 )
 
 func Run(path string) error {
@@ -78,9 +75,6 @@ func RunDescriptor(descriptor session.Descriptor) error {
 	if err := openFile(cfg, claimed.Mode, localPath); err != nil {
 		return err
 	}
-	if claimed.Mode == "local-edit-exclusive" && claimed.Writeback != nil {
-		return waitForStableChange(localPath, *claimed.Writeback, time.Unix(claimed.ExpiresAt, 0))
-	}
 	return nil
 }
 
@@ -116,8 +110,7 @@ func localMirrorPath(root string, claimed session.Claimed) (string, error) {
 // explicit action, or downloads when no local copy exists.
 //   - "overwrite": re-download the server version (discard local edits)
 //   - "keep_local": keep the local copy (edit then manually upload)
-//   - "" (unset): default to keep_local for local-edit (preserve local work),
-//     and overwrite for local-edit-exclusive (server is the source of truth).
+//   - "" (unset): default to keep_local for local-edit (preserve local work).
 //
 // 注意：不能拿本地文件内容 SHA1 与 claimed.FileID 比对来判断「是否已下载」。
 // FileID 是 Seafile obj_id（文件元数据 JSON 的 SHA1），并非内容 SHA1，两者
@@ -133,9 +126,6 @@ func reuseOrDownload(claimed session.Claimed, localPath, action string) error {
 	case "keep_local":
 		return nil
 	default:
-		if claimed.Mode == "local-edit-exclusive" {
-			return download(claimed.File.ContentURL, localPath)
-		}
 		return nil
 	}
 }
@@ -211,113 +201,4 @@ func openDefault(path string) error {
 		command = exec.Command("xdg-open", path)
 	}
 	return command.Start()
-}
-
-func waitForStableChange(path string, writeback session.Writeback, expires time.Time) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-	defer watcher.Close()
-	if err := watcher.Add(filepath.Dir(path)); err != nil {
-		return err
-	}
-	deadline := time.NewTimer(time.Until(expires))
-	defer deadline.Stop()
-	heartbeat := time.NewTicker(5 * time.Minute)
-	defer heartbeat.Stop()
-	stabilityCheck := time.NewTicker(time.Second)
-	defer stabilityCheck.Stop()
-	var changedAt time.Time
-	for {
-		select {
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return fmt.Errorf("file watcher stopped unexpectedly")
-			}
-			// Write 覆盖「直接写」；Rename 覆盖「旧文件被移走」；Create 覆盖
-			// rename 原子替换保存时「新文件就位」的动作（Windows
-			// RENAMED_NEW_NAME 被 fsnotify 映射为 Create）。缺了 Create 会
-			// 漏掉 Word/WPS/Excel 这类「写临时文件再 rename 覆盖」的保存。
-			if event.Name == path && event.Op&(fsnotify.Write|fsnotify.Rename|fsnotify.Create) != 0 {
-				changedAt = time.Now()
-			}
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return fmt.Errorf("file watcher stopped unexpectedly")
-			}
-			return fmt.Errorf("watch local file: %w", err)
-		case <-stabilityCheck.C:
-			if !changedAt.IsZero() && time.Since(changedAt) >= 3*time.Second {
-				return upload(path, writeback)
-			}
-		case <-heartbeat.C:
-			if err := renew(writeback); err != nil {
-				return fmt.Errorf("editing lease could not be renewed: %w", err)
-			}
-		case <-deadline.C:
-			return fmt.Errorf("editing session expired before a stable file change was saved")
-		}
-	}
-}
-
-func renew(writeback session.Writeback) error {
-	request, err := http.NewRequest(http.MethodPatch, writeback.HeartbeatURL, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Authorization", "Bearer "+writeback.Capability)
-	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("heartbeat was rejected (%d)", response.StatusCode)
-	}
-	return nil
-}
-
-func upload(path string, writeback session.Writeback) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	reader, writer := io.Pipe()
-	form := multipart.NewWriter(writer)
-	writeDone := make(chan error, 1)
-	go func() {
-		defer writer.Close()
-		part, err := form.CreateFormFile("file", filepath.Base(path))
-		if err == nil {
-			_, err = io.Copy(part, file)
-		}
-		if closeErr := form.Close(); err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			_ = writer.CloseWithError(err)
-		}
-		writeDone <- err
-	}()
-	defer reader.Close()
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPut, writeback.ContentURL, reader)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", form.FormDataContentType())
-	request.Header.Set("Authorization", "Bearer "+writeback.Capability)
-	response, err := (&http.Client{Timeout: 5 * time.Minute}).Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if err := <-writeDone; err != nil {
-		return err
-	}
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("file write-back failed (%d)", response.StatusCode)
-	}
-	return nil
 }

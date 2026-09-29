@@ -108,17 +108,13 @@ func Claim(descriptor Descriptor) (Claimed, error) {
 	if claimed.SessionID == "" || claimed.File.Name == "" || claimed.File.ContentURL == "" || claimed.ExpiresAt <= time.Now().Unix() {
 		return Claimed{}, fmt.Errorf("session claim response is invalid")
 	}
-	if claimed.Mode != "local-view" && claimed.Mode != "local-edit" && claimed.Mode != "local-edit-exclusive" {
+	if claimed.Mode != "local-view" && claimed.Mode != "local-edit" {
 		return Claimed{}, fmt.Errorf("session claim returned an unsupported mode")
 	}
-	if claimed.Mode == "local-edit-exclusive" && claimed.Writeback == nil {
-		return Claimed{}, fmt.Errorf("editing session is missing write-back capability")
+	if claimed.Writeback != nil {
+		return Claimed{}, fmt.Errorf("automatic write-back is not supported")
 	}
-	if claimed.Mode == "local-view" && claimed.Writeback != nil {
-		return Claimed{}, fmt.Errorf("viewing session unexpectedly permits write-back")
-	}
-	if !sameOrigin(descriptor.Server, claimed.File.ContentURL) ||
-		(claimed.Writeback != nil && (!sameOrigin(descriptor.Server, claimed.Writeback.ContentURL) || !sameOrigin(descriptor.Server, claimed.Writeback.HeartbeatURL))) {
+	if !sameOrigin(descriptor.Server, claimed.File.ContentURL) {
 		return Claimed{}, fmt.Errorf("session claim returned an untrusted URL")
 	}
 	return claimed, nil

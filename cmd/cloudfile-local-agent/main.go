@@ -19,7 +19,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/update"
 )
 
-const version = "0.5.1"
+const version = "0.5.2"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")

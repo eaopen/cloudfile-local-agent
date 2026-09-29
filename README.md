@@ -19,7 +19,7 @@ go build -trimpath -ldflags="-s -w" -o dist/cloudfile-local-agent ./cmd/cloudfil
 ./dist/cloudfile-local-agent --allow-origin https://cloudfile.example
 ```
 
-Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native Messaging Host 注册表项；不需要管理员权限，也不开放 localhost HTTP 服务。
+Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native Messaging Host 注册表项；Agent 是无需安装运行时的单文件程序，不需要管理员权限，也不开放 localhost HTTP 服务。将包放在当前用户可写的固定目录即可，不必写入 Program Files 或注册系统服务。
 
 ## 本地查看与编辑规则
 
@@ -69,7 +69,7 @@ CAD/三维格式。Windows 优先检查用户/机器注册的 `App Paths`，再�
 - 仅接收 `cloudfile-local/v2` 会话文件；会话文件只包含短期单次领取票据。
 - 每个 CloudFile origin 都须由用户/安装脚本显式加入本地信任列表。
 - Native Host manifest 精确指定正式扩展 ID；不使用通配 origin 或浏览器 Cookie。
-- 每个会话拥有独立工作区；本地编辑使用短时 write-back capability。
+- 本地编辑只保存到用户工作区，由用户在网页中手动上传；Agent 不接收 write-back capability，不监听文件变更，也不自动上传。`local-edit-exclusive` 暂不支持。
 - Agent 只接受常规且不超过 1 MiB 的会话文件；下载内容超过 4 GiB 会中止并清理。
 
 Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Host；真正的内容能力由 Agent 直接向 CloudFile Hub 领取。

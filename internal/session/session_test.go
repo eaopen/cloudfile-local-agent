@@ -31,11 +31,6 @@ func TestReadAndClaimV2EditSession(t *testing.T) {
 			ExpiresAt: time.Now().Add(time.Minute).Unix(),
 			File: File{Name: "plan.docx",
 				ContentURL: server.URL + "/content"},
-			Writeback: &Writeback{
-				ContentURL:   server.URL + "/writeback",
-				HeartbeatURL: server.URL + "/heartbeat",
-				Capability:   "capability",
-			},
 		})
 	}))
 	defer server.Close()
@@ -60,9 +55,34 @@ func TestReadAndClaimV2EditSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.Mode != "local-edit" || claimed.Writeback == nil ||
-		claimed.Writeback.Capability != "capability" {
+	if claimed.Mode != "local-edit" || claimed.Writeback != nil {
 		t.Fatalf("unexpected claim: %#v", claimed)
+	}
+}
+
+func TestClaimRejectsAutomaticWritebackAndExclusiveMode(t *testing.T) {
+	for _, mode := range []string{"local-view", "local-edit", "local-edit-exclusive"} {
+		t.Run(mode, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(Claimed{
+					SessionID: "session", Mode: mode,
+					ExpiresAt: time.Now().Add(time.Minute).Unix(),
+					File:      File{Name: "plan.docx", ContentURL: server.URL + "/content"},
+					Writeback: &Writeback{
+						ContentURL: server.URL + "/writeback", Capability: "capability",
+					},
+				})
+			}))
+			defer server.Close()
+			_, err := Claim(Descriptor{
+				Protocol: Protocol, Server: server.URL, Ticket: "ticket",
+				ExpiresAt: time.Now().Add(time.Minute).Unix(),
+			})
+			if err == nil {
+				t.Fatal("automatic write-back must be rejected")
+			}
+		})
 	}
 }
 
