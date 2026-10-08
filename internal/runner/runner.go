@@ -1,8 +1,6 @@
 package runner
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +14,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
 func Run(path string) error {
@@ -41,7 +40,7 @@ func RunDescriptor(descriptor session.Descriptor) error {
 	if err != nil {
 		return err
 	}
-	root, err := cfg.Root()
+	root, err := workspace.Resolve(cfg)
 	if err != nil {
 		return err
 	}
@@ -49,99 +48,120 @@ func RunDescriptor(descriptor session.Descriptor) error {
 	if name == "." || name == string(filepath.Separator) || name == "" {
 		return fmt.Errorf("session returned an invalid file name")
 	}
-	// Mirror the server directory layout under {root}/{repo_id}/{path},
-	// with repo_id as the first level (stable across library rename/move).
-	localPath, err := localMirrorPath(root, claimed)
+	if workspace.RelPath(claimed.Path) == "" {
+		return fmt.Errorf("session returned an invalid file path")
+	}
+	repoID := RepoID(claimed)
+	localPath, err := workspace.Path(root, claimed.Mode, repoID, claimed.Path)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		return err
 	}
-
-	// Reuse decision for non-view modes: if a local copy already exists and its
-	// content hash differs from the server file_id, honour the caller's action.
-	if claimed.Mode != "local-view" {
-		if err := reuseOrDownload(claimed, localPath, descriptor.LocalAction); err != nil {
-			return err
-		}
-	} else {
-		if err := download(claimed.File.ContentURL, localPath); err != nil {
-			return err
-		}
-		_ = os.Chmod(localPath, 0400)
-	}
-
-	if err := openFile(cfg, claimed.Mode, localPath); err != nil {
+	if err := materialize(root, claimed, repoID, localPath, descriptor.LocalAction); err != nil {
 		return err
 	}
-	return nil
+	return openFile(cfg, claimed.Mode, localPath)
 }
 
-// localMirrorPath joins the workspace root with a sanitised server-relative
-// path so a file at repo_id + path=/a/b/file.dwg lands at
-// {root}/repo_id/a/b/file.dwg. claimed.Path already includes the file name
-// (it is the full repo-relative path), so we must not append it again.
-// Every path segment is cleaned to prevent traversal outside the root.
-func localMirrorPath(root string, claimed session.Claimed) (string, error) {
-	repoID := claimed.RepoID
-	if repoID == "" {
-		repoID = claimed.SessionID
+// RepoID is the library folder that keys the mirror subtree. The session
+// identifier is only a fallback: a library keeps its folder when it is renamed
+// or moved, so mirroring by repo_id avoids needless re-downloads.
+func RepoID(claimed session.Claimed) string {
+	if claimed.RepoID != "" {
+		return claimed.RepoID
 	}
-	rel := filepath.Clean(filepath.Join(string(filepath.Separator), claimed.Path))
-	rel = strings.TrimPrefix(rel, string(filepath.Separator))
-	full := filepath.Join(root, repoID, rel)
-	// Defence in depth: the joined result must stay under root.
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	absFull, err := filepath.Abs(full)
-	if err != nil {
-		return "", err
-	}
-	if absFull != absRoot && !strings.HasPrefix(absFull, absRoot+string(filepath.Separator)) {
-		return "", fmt.Errorf("session returned an unsafe path")
-	}
-	return full, nil
+	return claimed.SessionID
 }
 
-// reuseOrDownload reuses an existing local copy according to the caller's
-// explicit action, or downloads when no local copy exists.
-//   - "overwrite": re-download the server version (discard local edits)
-//   - "keep_local": keep the local copy (edit then manually upload)
-//   - "" (unset): default to keep_local for local-edit (preserve local work).
+// materialize makes sure localPath holds the copy this session should open.
 //
-// 注意：不能拿本地文件内容 SHA1 与 claimed.FileID 比对来判断「是否已下载」。
-// FileID 是 Seafile obj_id（文件元数据 JSON 的 SHA1），并非内容 SHA1，两者
-// 语义不同、永远不等。真正的「网盘是否被更新」判定由前端用「下载时记录的
-// fileId vs 当前 fileId」完成，这里只负责按前端决议的 action 落地。
-func reuseOrDownload(claimed session.Claimed, localPath, action string) error {
-	if _, err := os.Stat(localPath); err != nil {
-		return download(claimed.File.ContentURL, localPath)
-	}
-	switch action {
-	case "overwrite":
-		return download(claimed.File.ContentURL, localPath)
-	case "keep_local":
+// View copies and edit copies never share a path, so opening a file for viewing
+// can no longer overwrite a half-finished local edit -- the two live in
+// separate subtrees (see the workspace package). Inside each subtree:
+//
+//   - view: the replica is reused only while it still matches both the
+//     fingerprint recorded at download time and the version the server serves
+//     now. Anything else re-fetches it, which is cheap because a replica is
+//     disposable.
+//   - edit: the working copy is never touched unless the caller explicitly
+//     asked to overwrite it. Local work is only discarded on an explicit
+//     decision, never as a side effect.
+//
+// An unrecognised action falls back to keeping the local copy: refusing to
+// destroy local work costs at most one stale file, while getting it wrong costs
+// the work itself.
+func materialize(root string, claimed session.Claimed, repoID, localPath, action string) error {
+	_, statErr := os.Stat(localPath)
+	if statErr == nil {
+		if claimed.Mode == workspace.ModeView {
+			if unchanged(root, claimed, repoID, localPath) {
+				return nil
+			}
+			return fetch(root, claimed, repoID, localPath)
+		}
+		if action == "overwrite" {
+			return fetch(root, claimed, repoID, localPath)
+		}
 		return nil
-	default:
-		return nil
 	}
+	if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	return fetch(root, claimed, repoID, localPath)
 }
 
-// Sha1File returns the lowercase hex SHA1 of a file's contents.
-func Sha1File(path string) (string, error) {
-	file, err := os.Open(path)
+// unchanged reports whether a local replica still matches the fingerprint
+// recorded when it was downloaded and the version the server is serving now.
+// A missing or partial fingerprint answers "no", so the replica is re-fetched
+// rather than trusted.
+func unchanged(root string, claimed session.Claimed, repoID, localPath string) bool {
+	record, found := workspace.ReadRecord(root, claimed.Mode, repoID, claimed.Path)
+	if !found || record.Digest == "" || record.FileID == "" || claimed.FileID == "" {
+		return false
+	}
+	if record.FileID != claimed.FileID {
+		return false
+	}
+	digest, err := workspace.DigestFile(localPath)
+	return err == nil && digest == record.Digest
+}
+
+// fetch downloads the server version over localPath and records what was
+// downloaded.
+//
+// A view replica is made read-only, so a slip inside a viewer cannot silently
+// turn it into a working copy. An edit copy is made writable, because the user
+// is expected to save into it.
+func fetch(root string, claimed session.Claimed, repoID, localPath string) error {
+	if err := download(claimed.File.ContentURL, localPath); err != nil {
+		return err
+	}
+	if claimed.Mode == workspace.ModeView {
+		_ = os.Chmod(localPath, 0400)
+	} else {
+		_ = os.Chmod(localPath, 0600)
+	}
+	// The download already succeeded; a fingerprint that cannot be written only
+	// costs the next open a re-check, so it never fails the session.
+	digest, err := workspace.DigestFile(localPath)
 	if err != nil {
-		return "", err
+		return nil
 	}
-	defer file.Close()
-	hasher := sha1.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", err
+	size := int64(0)
+	if info, err := os.Stat(localPath); err == nil {
+		size = info.Size()
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	_ = workspace.WriteRecord(root, claimed.Mode, repoID, claimed.Path, workspace.Record{
+		RepoID: repoID,
+		Path:   claimed.Path,
+		Mode:   claimed.Mode,
+		FileID: claimed.FileID,
+		Digest: digest,
+		Size:   size,
+	})
+	return nil
 }
 
 // download writes rawURL to target, replacing any existing file.
@@ -153,6 +173,12 @@ func download(rawURL, target string) error {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("file download failed (%d)", response.StatusCode)
+	}
+	// Windows refuses to open a read-only file for writing, and a previous view
+	// download leaves its replica read-only, so the bit is cleared before the
+	// truncating open rather than after it fails.
+	if _, err := os.Stat(target); err == nil {
+		_ = os.Chmod(target, 0600)
 	}
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {

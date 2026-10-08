@@ -173,15 +173,45 @@ func (c Config) Allows(rawURL string) bool {
 	return false
 }
 
+// Root returns the local mirror root. Sessions are downloaded into
+// {root}/{view|edit}/{repo_id}/{path}: view copies and editable working copies
+// live in separate subtrees.
+//
+// An explicit workspace_root always wins, so operations can pin the location
+// per machine without touching the binaries.  Otherwise the platform default
+// applies: on Windows that prefers D: and only falls back to the system drive
+// (%LocalAppData%) when D: is missing or unusable.  The choice is re-checked on
+// every call, so a drive that becomes unusable degrades to the system drive
+// instead of failing mid-download.
 func (c Config) Root() (string, error) {
 	if c.WorkspaceRoot != "" {
 		return filepath.Abs(c.WorkspaceRoot)
 	}
-	dir, err := os.UserCacheDir()
+	fallback, err := FallbackRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "CloudFileLocal", "sessions"), nil
+	return selectRoot(preferredRoots(), fallback, usableWorkspace), nil
+}
+
+// FallbackRoot is the location the mirror uses when no preferred drive is
+// usable.  It is exported because the mirror that a machine built before the
+// drive policy existed already lives there, and it has to be moved onto the
+// chosen root exactly once.
+func FallbackRoot() (string, error) {
+	return systemRoot()
+}
+
+// selectRoot returns the first candidate that the probe accepts, otherwise
+// fallback.  Candidate order is the entire policy, so it is kept as a pure
+// function that tests can pin without touching real drives.
+func selectRoot(preferred []string, fallback string, usable func(string) bool) string {
+	for _, candidate := range preferred {
+		if usable(candidate) {
+			return candidate
+		}
+	}
+	return fallback
 }
 
 func AddOrigin(rawOrigin string) (Config, error) {

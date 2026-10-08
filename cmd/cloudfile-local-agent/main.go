@@ -17,9 +17,10 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
 	"github.com/eaopen/cloudfile-local-agent/internal/update"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "0.5.2"
+const version = "0.5.5"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
@@ -97,7 +98,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			Applications: appfinder.Names(),
 		}
 		if agentConfig, err := config.Load(); err == nil {
-			if root, err := agentConfig.Root(); err == nil {
+			if root, err := workspace.Resolve(agentConfig); err == nil {
 				response.WorkspaceRoot = root
 				response.CanOpenWorkspace = true
 			}
@@ -120,14 +121,28 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
-		root, err := agentConfig.Root()
+		root, err := workspace.Resolve(agentConfig)
 		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
+		// 打开某个用途下的库/目录镜像；Path 为空时到库级目录，否则到 Path 指向的文件/目录。
+		// repo_id 为空时打开镜像根，两个用途子树都在下面。
+		mode := request.MirrorMode()
 		target := root
 		if request.RepoID != "" {
-			// 打开某个库的镜像路径；Path 为空时到库级目录，否则到 Path 指向的文件/目录。
-			target = filepath.Join(root, request.RepoID, request.Path)
+			target, err = workspace.Path(root, mode, request.RepoID, request.Path)
+			if err != nil {
+				return nativehost.Response{Error: err.Error()}
+			}
+			if _, statErr := os.Stat(target); os.IsNotExist(statErr) {
+				// 该用途下还没有本地副本时，退到另一用途的同一位置，
+				// 避免把用户带到一个空目录。
+				if alternate, alternateErr := workspace.Path(root, alternateMode(mode), request.RepoID, request.Path); alternateErr == nil {
+					if _, alternateStat := os.Stat(alternate); alternateStat == nil {
+						target = alternate
+					}
+				}
+			}
 		}
 		// 目标是已存在的文件 → 用 /select 在文件管理器中高亮；已存在的目录 → 直接打开；
 		// 均不存在 → 回退打开父目录（MkdirAll 保证存在）。
@@ -150,7 +165,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 				return nativehost.Response{Error: err.Error()}
 			}
 		}
-		return nativehost.Response{OK: true, WorkspaceRoot: root, LocalPath: target}
+		return nativehost.Response{OK: true, Mode: mode, WorkspaceRoot: root, LocalPath: target}
 	case "query_local_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid query_local_file request"}
@@ -159,28 +174,46 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
-		root, err := agentConfig.Root()
+		root, err := workspace.Resolve(agentConfig)
 		if err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
+		mode := request.MirrorMode()
 		// request.Path 是含文件名的库内完整路径（如 /dir/file.dwg）。
-		localPath := filepath.Join(root, request.RepoID, request.Path)
+		localPath, err := workspace.Path(root, mode, request.RepoID, request.Path)
+		if err != nil {
+			return nativehost.Response{Error: err.Error()}
+		}
 		info, statErr := os.Stat(localPath)
 		if statErr != nil {
-			return nativehost.Response{OK: true, LocalExists: false, LocalPath: localPath}
+			return nativehost.Response{OK: true, Mode: mode, LocalExists: false, LocalPath: localPath}
 		}
-		hash, hashErr := runner.Sha1File(localPath)
-		if hashErr != nil {
-			return nativehost.Response{Error: hashErr.Error()}
-		}
-		return nativehost.Response{
+		response := nativehost.Response{
 			OK:          true,
+			Mode:        mode,
 			LocalExists: true,
 			LocalPath:   localPath,
 			LocalSize:   info.Size(),
 			LocalMTime:  info.ModTime().Unix(),
-			LocalHash:   hash,
 		}
+		// 指纹只在下过这份副本时才有。没有指纹就无法判断本地是否被改过，
+		// 也就不必为一个大文件白读一遍内容，交给网页按「无法确认」处理。
+		if record, found := workspace.ReadRecord(root, mode, request.RepoID, request.Path); found {
+			response.BaselineExists = true
+			response.BaselineFileID = record.FileID
+			response.BaselineDigest = record.Digest
+			response.BaselineAt = record.StoredAt
+			if record.Digest != "" {
+				sha1Sum, digest, hashErr := workspace.Hashes(localPath)
+				if hashErr != nil {
+					return nativehost.Response{Error: hashErr.Error()}
+				}
+				response.LocalHash = sha1Sum
+				response.LocalDigest = digest
+				response.LocalChanged = record.Digest != digest
+			}
+		}
+		return response
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}
@@ -231,6 +264,16 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "CloudFile Local Agent:", err)
 	os.Exit(1)
+}
+
+// alternateMode is the other mirror subtree. It is used to fall back when the
+// requested subtree holds no local copy, so the user is never dropped into an
+// empty folder while their file sits in the other one.
+func alternateMode(mode string) string {
+	if mode == workspace.ModeView {
+		return workspace.ModeEdit
+	}
+	return workspace.ModeView
 }
 
 func openDirectory(path string) error {

@@ -20,6 +20,7 @@ type Request struct {
 	Ticket      string `json:"ticket,omitempty"`
 	ExpiresAt   int64  `json:"expires_at,omitempty"`
 	RepoID      string `json:"repo_id,omitempty"`
+	Mode        string `json:"mode,omitempty"`
 	LocalAction string `json:"local_action,omitempty"`
 }
 
@@ -33,14 +34,40 @@ type Response struct {
 	UpdateAvailable  bool     `json:"update_available,omitempty"`
 	LatestVersion    string   `json:"latest_version,omitempty"`
 	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
+	Mode             string   `json:"mode,omitempty"`
 	LocalExists      bool     `json:"local_exists,omitempty"`
 	LocalPath        string   `json:"local_path,omitempty"`
 	LocalHash        string   `json:"local_hash,omitempty"`
+	LocalDigest      string   `json:"local_digest,omitempty"`
 	LocalSize        int64    `json:"local_size,omitempty"`
 	LocalMTime       int64    `json:"local_mtime,omitempty"`
+	// Baseline* describe the fingerprint written when the local copy was
+	// downloaded. They let the page tell "the server moved on" from "the user
+	// changed the local copy" without keeping any state in browser storage.
+	BaselineExists bool   `json:"baseline_exists,omitempty"`
+	BaselineFileID string `json:"baseline_file_id,omitempty"`
+	BaselineDigest string `json:"baseline_digest,omitempty"`
+	BaselineAt     int64  `json:"baseline_at,omitempty"`
+	// LocalChanged is only meaningful when BaselineExists is true: a false
+	// baseline means the local copy cannot be compared, not that it matches.
+	LocalChanged bool `json:"local_changed,omitempty"`
+}
+
+// mode returns the mirror subtree a request addresses. Anything that is not an
+// explicit view request is treated as editable, which is the conservative
+// default: the edit subtree is the only one that never gets overwritten by a
+// view open.
+func (r Request) MirrorMode() string {
+	if r.Mode == "local-view" {
+		return "local-view"
+	}
+	return "local-edit"
 }
 
 func (r Request) Valid() bool {
+	if r.Mode != "" && r.Mode != "local-view" && r.Mode != "local-edit" {
+		return false
+	}
 	if r.Type == "status" {
 		return r.Path == ""
 	}

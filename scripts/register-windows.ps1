@@ -1,8 +1,10 @@
 ﻿param(
   [string]$ExtensionId = "gocnpbhnbikcpnlafmodflddgnmfcjoc",
   [string[]]$ServerOrigin = @("http://10.9.8.162:6111", "http://etech.stcetech.ad01.sec.com"),
-  [string]$UpdateSource = "http://10.9.8.162:6111/cloudfile-updates/update.json",
-  [string]$ExtensionUpdateSource = "http://10.9.8.162:6111/cloudfile-updates/extension-update.json",
+  # 更新源固定指向门户域名，由该域名上的 nginx 把 /cloudfile-updates/ 反代到实际静态服务。
+  # 静态服务换 IP/端口时只改 nginx，已装机机器无需重跑本脚本。
+  [string]$UpdateSource = "http://etech.stcetech.ad01.sec.com/cloudfile-updates/update.json",
+  [string]$ExtensionUpdateSource = "http://etech.stcetech.ad01.sec.com/cloudfile-updates/extension-update.json",
   [string]$BinaryPath = ""
 )
 
