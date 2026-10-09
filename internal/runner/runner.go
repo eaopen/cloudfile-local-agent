@@ -52,14 +52,15 @@ func RunDescriptor(descriptor session.Descriptor) error {
 		return fmt.Errorf("session returned an invalid file path")
 	}
 	repoID := RepoID(claimed)
-	localPath, err := workspace.Path(root, claimed.Mode, repoID, claimed.Path)
+	dir, err := workspace.Dir(root, claimed.Mode, repoID)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	if err := materialize(root, claimed, repoID, localPath, descriptor.LocalAction); err != nil {
+	localPath, err := materialize(root, claimed, repoID, dir, descriptor.LocalAction)
+	if err != nil {
 		return err
 	}
 	return openFile(cfg, claimed.Mode, localPath)
@@ -75,16 +76,21 @@ func RepoID(claimed session.Claimed) string {
 	return claimed.SessionID
 }
 
-// materialize makes sure localPath holds the copy this session should open.
+// materialize makes sure the local copy this session should open exists, and
+// returns its path.
 //
-// View copies and edit copies never share a path, so opening a file for viewing
-// can no longer overwrite a half-finished local edit -- the two live in
-// separate subtrees (see the workspace package). Inside each subtree:
+// The library folder is flat and a file is identified by its in-library path,
+// so the on-disk name comes from the download record (it may carry a " (1)"
+// suffix because another library path already owns the plain name). Only a file
+// that has never been downloaded gets a freshly reserved name.
+//
+// View copies and edit copies never share a folder, so opening a file for
+// viewing can no longer overwrite a half-finished local edit. Within a folder:
 //
 //   - view: the replica is reused only while it still matches both the
 //     fingerprint recorded at download time and the version the server serves
-//     now. Anything else re-fetches it, which is cheap because a replica is
-//     disposable.
+//     now. Anything else re-fetches it into the same name, which is cheap
+//     because a replica is disposable.
 //   - edit: the working copy is never touched unless the caller explicitly
 //     asked to overwrite it. Local work is only discarded on an explicit
 //     decision, never as a side effect.
@@ -92,24 +98,38 @@ func RepoID(claimed session.Claimed) string {
 // An unrecognised action falls back to keeping the local copy: refusing to
 // destroy local work costs at most one stale file, while getting it wrong costs
 // the work itself.
-func materialize(root string, claimed session.Claimed, repoID, localPath, action string) error {
-	_, statErr := os.Stat(localPath)
-	if statErr == nil {
-		if claimed.Mode == workspace.ModeView {
-			if unchanged(root, claimed, repoID, localPath) {
-				return nil
+func materialize(root string, claimed session.Claimed, repoID, dir, action string) (string, error) {
+	name, recorded := workspace.FileName(root, claimed.Mode, repoID, claimed.Path)
+	if name == "" {
+		return "", fmt.Errorf("session returned an unusable file name")
+	}
+	localPath := filepath.Join(dir, name)
+	if recorded {
+		if info, err := os.Stat(localPath); err == nil && info.Mode().IsRegular() {
+			if claimed.Mode == workspace.ModeView {
+				if unchanged(root, claimed, repoID, localPath) {
+					return localPath, nil
+				}
+				return localPath, fetch(root, claimed, repoID, localPath, name)
 			}
-			return fetch(root, claimed, repoID, localPath)
+			if action == "overwrite" {
+				return localPath, fetch(root, claimed, repoID, localPath, name)
+			}
+			return localPath, nil
 		}
-		if action == "overwrite" {
-			return fetch(root, claimed, repoID, localPath)
-		}
-		return nil
+		// The recorded copy is gone (moved or deleted outside the agent).
+		// Downloading again under the same name keeps the fingerprint valid.
+		return localPath, fetch(root, claimed, repoID, localPath, name)
 	}
-	if !os.IsNotExist(statErr) {
-		return statErr
+	// No record: this library path has never been downloaded. Its plain name may
+	// already belong to a different library path, so a free one is reserved the
+	// way Windows would ("name (1)", "name (2)", ...).
+	unique, err := workspace.UniqueName(dir, name)
+	if err != nil {
+		return "", err
 	}
-	return fetch(root, claimed, repoID, localPath)
+	localPath = filepath.Join(dir, unique)
+	return localPath, fetch(root, claimed, repoID, localPath, unique)
 }
 
 // unchanged reports whether a local replica still matches the fingerprint
@@ -129,12 +149,12 @@ func unchanged(root string, claimed session.Claimed, repoID, localPath string) b
 }
 
 // fetch downloads the server version over localPath and records what was
-// downloaded.
+// downloaded, including the name it was stored under.
 //
 // A view replica is made read-only, so a slip inside a viewer cannot silently
 // turn it into a working copy. An edit copy is made writable, because the user
 // is expected to save into it.
-func fetch(root string, claimed session.Claimed, repoID, localPath string) error {
+func fetch(root string, claimed session.Claimed, repoID, localPath, name string) error {
 	if err := download(claimed.File.ContentURL, localPath); err != nil {
 		return err
 	}
@@ -157,6 +177,7 @@ func fetch(root string, claimed session.Claimed, repoID, localPath string) error
 		RepoID: repoID,
 		Path:   claimed.Path,
 		Mode:   claimed.Mode,
+		Name:   name,
 		FileID: claimed.FileID,
 		Digest: digest,
 		Size:   size,

@@ -24,7 +24,6 @@ func TestApplyEndToEnd(t *testing.T) {
 			Version:     "0.4.0",
 			SHA256:      sum,
 			DownloadURL: "./cloudfile-local-agent-0.4.0.exe",
-			MinVersion:  "0.3.0",
 		})
 	})
 	mux.HandleFunc("/cloudfile-updates/cloudfile-local-agent-0.4.0.exe", func(w http.ResponseWriter, _ *http.Request) {

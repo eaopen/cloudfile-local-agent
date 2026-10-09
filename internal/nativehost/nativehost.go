@@ -28,19 +28,28 @@ type Response struct {
 	OK               bool     `json:"ok"`
 	Error            string   `json:"error,omitempty"`
 	Version          string   `json:"version,omitempty"`
+	ExecutablePath   string   `json:"executable_path,omitempty"`
 	Applications     []string `json:"applications,omitempty"`
 	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
 	CanOpenWorkspace bool     `json:"can_open_workspace,omitempty"`
 	UpdateAvailable  bool     `json:"update_available,omitempty"`
 	LatestVersion    string   `json:"latest_version,omitempty"`
+	LatestNotes      string   `json:"latest_notes,omitempty"`
 	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
-	Mode             string   `json:"mode,omitempty"`
-	LocalExists      bool     `json:"local_exists,omitempty"`
-	LocalPath        string   `json:"local_path,omitempty"`
-	LocalHash        string   `json:"local_hash,omitempty"`
-	LocalDigest      string   `json:"local_digest,omitempty"`
-	LocalSize        int64    `json:"local_size,omitempty"`
-	LocalMTime       int64    `json:"local_mtime,omitempty"`
+	// Extension* describe the browser extension, so the extension can drive its
+	// own update prompt over Native Messaging instead of a cross-origin fetch
+	// (which needs CORS and silently fails without it). An available version is
+	// only ever a prompt: nothing is refused because of a version comparison.
+	ExtensionLatestVersion    string `json:"extension_latest_version,omitempty"`
+	ExtensionInstalledVersion string `json:"extension_installed_version,omitempty"`
+	ExtensionNotes            string `json:"extension_notes,omitempty"`
+	Mode                      string `json:"mode,omitempty"`
+	LocalExists               bool   `json:"local_exists,omitempty"`
+	LocalPath                 string `json:"local_path,omitempty"`
+	LocalHash                 string `json:"local_hash,omitempty"`
+	LocalDigest               string `json:"local_digest,omitempty"`
+	LocalSize                 int64  `json:"local_size,omitempty"`
+	LocalMTime                int64  `json:"local_mtime,omitempty"`
 	// Baseline* describe the fingerprint written when the local copy was
 	// downloaded. They let the page tell "the server moved on" from "the user
 	// changed the local copy" without keeping any state in browser storage.
@@ -71,12 +80,27 @@ func (r Request) Valid() bool {
 	if r.Type == "status" {
 		return r.Path == ""
 	}
+	if r.Type == "update" {
+		return r.Path == ""
+	}
+	if r.Type == "check_update" {
+		return r.Path == ""
+	}
+	if r.Type == "update_extension" {
+		return r.Path == ""
+	}
 	if r.Type == "open_workspace" {
 		return r.Protocol == "" && r.Server == "" &&
 			r.Ticket == "" && r.ExpiresAt == 0
 	}
 	if r.Type == "query_local_file" {
 		return r.RepoID != "" && r.Path != ""
+	}
+	// query_local_folder asks whether a library already has a local folder for a
+	// mode; it addresses the folder, not one file, so it carries no path.
+	if r.Type == "query_local_folder" {
+		return r.RepoID != "" && r.Protocol == "" && r.Server == "" &&
+			r.Ticket == "" && r.ExpiresAt == 0
 	}
 	if r.Type == "open_session" {
 		return r.Path == "" && r.Protocol != "" && r.Server != "" &&

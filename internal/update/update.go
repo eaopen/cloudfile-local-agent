@@ -34,17 +34,26 @@ import (
 const maxBinaryBytes = 256 << 20
 
 // Manifest mirrors update.json served by the static update source.
+//
+// There is deliberately no min_version field: an update is only ever a prompt.
+// (The release JSONs may still carry the key; unknown keys are ignored.)
 type Manifest struct {
 	Version     string `json:"version"`
 	SHA256      string `json:"sha256"`
 	DownloadURL string `json:"download_url"`
-	MinVersion  string `json:"min_version"`
 	Notes       string `json:"notes"`
 }
 
-// Fetch retrieves and decodes update.json from the source URL.
+// Fetch retrieves and decodes update.json from the source URL. It keeps the
+// long timeout because it backs an explicit user action (--check-update /
+// --update); the lightweight status/check_update path uses FetchCached, which
+// bounds the wait far more tightly.
 func Fetch(source string) (*Manifest, error) {
-	response, err := (&http.Client{Timeout: 30 * time.Second}).Get(source)
+	return fetchWithTimeout(source, 30*time.Second)
+}
+
+func fetchWithTimeout(source string, timeout time.Duration) (*Manifest, error) {
+	response, err := (&http.Client{Timeout: timeout}).Get(source)
 	if err != nil {
 		return nil, err
 	}
