@@ -14,6 +14,7 @@ import (
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
+	"github.com/eaopen/cloudfile-local-agent/internal/home"
 	"github.com/eaopen/cloudfile-local-agent/internal/launch"
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
@@ -22,7 +23,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "1.0.0"
+const version = "1.0.1"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
@@ -542,11 +543,7 @@ func orUnknown(value string) string {
 // logUpdate appends one line to the agent's update log. A detached upgrade has
 // no console, so this file is the only way to diagnose a failed upgrade.
 func logUpdate(format string, args ...any) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return
-	}
-	path := filepath.Join(dir, "CloudFileLocal", "update.log")
+	path := filepath.Join(home.Dir(), "update.log")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}

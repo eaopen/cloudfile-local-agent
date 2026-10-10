@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/eaopen/cloudfile-local-agent/internal/home"
 )
 
 // maxBinaryBytes caps the downloaded update binary. The agent itself is ~6.4
@@ -145,26 +147,19 @@ func applyWithPaths(source string, manifest *Manifest, binDir, manifestPath stri
 }
 
 // BinDir is where versioned agent binaries live, next to the native-host
-// manifest and the session workspace (all under the per-user cache dir, which
-// on Windows is %LocalAppData%).
+// manifest, the unpacked extension and the mirror - all under the shared
+// install folder (see internal/home). The installer creates that folder and the
+// agent follows it, so a self-update always lands beside the manifest that
+// Chrome was registered against.
 func BinDir() (string, error) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "CloudFileLocal", "bin"), nil
+	return filepath.Join(home.Dir(), "bin"), nil
 }
 
-// ManifestPath mirrors register-windows.ps1, which writes the native-host
-// manifest to %LocalAppData%\CloudFileLocal\com.cloudfile.local_agent.json
-// (os.UserCacheDir on Windows). macOS/Linux native-host registration would
-// need its own location; the current deployment is Windows-only.
+// ManifestPath is the native-host manifest inside the shared install folder;
+// register-windows.ps1 writes exactly this file and points the Chrome registry
+// key at it, so it is the anchor home.Dir() follows.
 func ManifestPath() (string, error) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "CloudFileLocal", "com.cloudfile.local_agent.json"), nil
+	return filepath.Join(home.Dir(), home.ManifestName), nil
 }
 
 func versionedName(version string) string {
