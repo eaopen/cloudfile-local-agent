@@ -24,6 +24,8 @@ func KeychainCommitSigner(alias, thumbprint, instance, deviceID, sessionID strin
 			validateErr = challenge.ValidateLease(instance, deviceID, sessionID, time.Now())
 		case "commit":
 			validateErr = challenge.Validate(instance, deviceID, sessionID, time.Now())
+		case "claim", "read":
+			validateErr = challenge.ValidateSessionProof(instance, deviceID, sessionID, challenge.Operation, time.Now())
 		default:
 			return "", errors.New("fixed signed device operation required")
 		}

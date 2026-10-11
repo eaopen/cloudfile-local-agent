@@ -32,7 +32,11 @@ macOS 拒绝无签名旧版更新清单。用 `--set-update-source https://.../r
 
 ## 实现边界
 
-目前本地会话、安装、签名更新、Keychain 签名适配和 CLI 配对已接入。设备 open_uri 完整运行链、配对 GUI、服务端原生 device publication 和人工 Commit/Checkin 产品入口尚未完成；独占保存保持关闭，prepared 不显示为保存成功。不能将此开发包称为已完成全部端到端验收的正式版本。
+v0.7 2.0.1 RC 已新增 macOS **当前用户 Go Native Host 接收新版 open_uri**，严格识别 HTTPS 实例/规范化 URI、当前本机 Keychain 配对，原始 claim/read 通过独立的一次性 P-256 签名挑战；实际文件仅通过固定 /seafhttp/cloudfile/read 的 Header Bearer、无 Cookie/redirect 的受控下载得到。宿主机只将 URI 通过固定 --open-uri-stdin 私有管道传递，绝不把票据置于命令行、日志或 AppleScript 中。
+
+用户明确同意打开后，macOS 系统原生弹框提供普通编辑“保存云端继续／保存云端完成／保留本地关闭／恢复原 Intent”，以及独占“Commit 继续／Commit 并 Checkin／Abandon／关闭保留 Checkout”。独占设备授权继续使用原有 Checkout Journal/Lease 交付，每四分钟尝试续租，操作前要求当前续租可确认；放弃必须服务端签名释放。所有结果不确定都保留本地工作副本和原始 Intent，不自动重发文件；用户关闭窗口只停止续租，不宣称隐式释放锁。
+
+**当前是 RC 源码、跨架构编译、单测和静态 AppleScript 校验通过，不是已完成的正式发布。** 配对 GUI 仍为 CLI 明确握手；真实 Chrome→Keychain 当前设备→Hub/Seafile→Office/CAD→回传与异常恢复尚未验收。Developer ID 签名、Apple 公证及 Intel 实机测试也是外部验收门槛。
 
 ## 已执行验证
 

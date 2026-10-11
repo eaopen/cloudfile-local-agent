@@ -76,6 +76,20 @@ func (b *DeviceCommitBroker) request(ctx context.Context, operation string, requ
 	return nil
 }
 
+// RequestPairedSession exposes only the fixed, cookie-free *read/claim*
+// operations to the installed macOS local session controller. It does not
+// permit upload, arbitrary URLs, Checkout or unsigned file access.
+func (b *DeviceCommitBroker) RequestPairedSession(ctx context.Context,
+	action string, request any, result any) error {
+	switch action {
+	case "challenge", "claim", "read-challenge", "read-ticket":
+		return b.request(ctx, action, request, result)
+	default:
+		return errors.New("fixed paired-session operation required")
+	}
+}
+func (b *DeviceCommitBroker) Instance() string { return b.instance }
+
 // PrepareIntent performs a two-step, single-use challenge bound to the exact
 // saved snapshot and guard. It never uploads a byte, and returns no bearer.
 func (b *DeviceCommitBroker) PrepareIntent(ctx context.Context, lease Lease, intent Intent) error {

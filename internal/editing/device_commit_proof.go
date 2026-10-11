@@ -34,6 +34,13 @@ type DeviceCommitChallenge struct {
 
 // ValidateLease requires a distinct server challenge operation, never a
 // reusable commit or read signature.
+// ValidateSessionProof is only for paired one-use claim and guarded read.
+func (c DeviceCommitChallenge) ValidateSessionProof(instance, deviceID, sessionID, operation string, now time.Time) error {
+	if operation != "claim" && operation != "read" {
+		return errors.New("fixed device session proof required")
+	}
+	return c.validateFor(instance, deviceID, sessionID, operation, now)
+}
 func (c DeviceCommitChallenge) ValidateLease(instance, deviceID, sessionID string, now time.Time) error {
 	return c.validateFor(instance, deviceID, sessionID, "lease", now)
 }
@@ -63,7 +70,7 @@ func (c DeviceCommitChallenge) validateFor(instance, deviceID, sessionID, expect
 func (c DeviceCommitChallenge) Message() ([]byte, error) {
 	// json.Marshal sorts object keys, matching the Python DeviceChallenge.message
 	// canonical sorted compact JSON; no private credentials enter the message.
-	if c.Operation != "commit" && c.Operation != "lease" {
+	if c.Operation != "commit" && c.Operation != "lease" && c.Operation != "claim" && c.Operation != "read" {
 		return nil, errors.New("unsupported signing action")
 	}
 	obj := map[string]any{

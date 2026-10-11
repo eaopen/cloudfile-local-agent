@@ -38,6 +38,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print Agent2 version")
 	editingCapabilities := flag.Bool("editing-capabilities", false, "report supported local editing stages, without credentials")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
+	openURIStdin := flag.Bool("open-uri-stdin", false, "open one paired URI from local pipe")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
 	setUpdateKey := flag.String("set-update-key", "", "pin a local P-256 release public PEM file")
@@ -178,6 +179,15 @@ func main() {
 		}
 		return
 	}
+	if *openURIStdin {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("fixed paired URI pipe required"))
+		}
+		if err := runOpenURIFromStdin(); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *runSessionStdin {
 		if err := runSessionFromStdin(); err != nil {
 			fail(err)
@@ -227,6 +237,12 @@ func main() {
 // exists. The controller delegates only advertised operations.
 func advertisedCapabilities(trustedOrigins []string) []string {
 	operations := []string{"check_update"}
+	// The macOS Agent2 Host advertises a gated URI receiver. It never grants
+	// access without a confirmed local Keychain pairing and a live one-use
+	// server claim, verified only by the receiver worker.
+	if runtime.GOOS == "darwin" {
+		operations = append(operations, "open_uri")
+	}
 	if len(trustedOrigins) != 0 {
 		operations = append(operations, "open_session", "open_session_file",
 			"query_local_file", "query_local_folder", "open_workspace")
@@ -427,6 +443,18 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			exists = true
 		}
 		return nativehost.Response{OK: true, Mode: mode, LocalExists: exists, LocalPath: dir}
+	case "open_uri":
+		if runtime.GOOS != "darwin" || !request.Valid() {
+			return nativehost.Response{Error: "macOS paired URI required"}
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return nativehost.Response{Error: "installed local Agent unavailable"}
+		}
+		if err = launch.WithInput(executable, []byte(request.URI), "--open-uri-stdin"); err != nil {
+			return nativehost.Response{Error: "local session controller unavailable"}
+		}
+		return nativehost.Response{OK: true}
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}

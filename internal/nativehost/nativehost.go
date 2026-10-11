@@ -22,6 +22,7 @@ type Request struct {
 	RepoID      string `json:"repo_id,omitempty"`
 	Mode        string `json:"mode,omitempty"`
 	LocalAction string `json:"local_action,omitempty"`
+	URI         string `json:"uri,omitempty"`
 }
 
 type Response struct {
@@ -106,6 +107,11 @@ func (r Request) Valid() bool {
 	if r.Type == "query_local_folder" {
 		return r.RepoID != "" && r.Protocol == "" && r.Server == "" &&
 			r.Ticket == "" && r.ExpiresAt == 0
+	}
+	if r.Type == "open_uri" {
+		return len(r.URI) > 0 && len(r.URI) <= 2048 && r.Path == "" &&
+			r.Server == "" && r.Ticket == "" && r.Protocol == "" && r.Mode == "" &&
+			r.RepoID == "" && r.ExpiresAt == 0 && r.LocalAction == ""
 	}
 	if r.Type == "open_session" {
 		return r.Path == "" && r.Protocol != "" && r.Server != "" &&
