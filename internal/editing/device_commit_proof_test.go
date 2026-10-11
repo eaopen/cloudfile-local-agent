@@ -4,7 +4,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +34,12 @@ func TestCanonicalGoCommitDeviceSignature(t *testing.T) {
 {"device_id":"11111111-1111-4111-8111-111111111111","expires_at":1791735059,"instance":"https://etech.example","issued_at":1791734999,"nonce":"`
 	if !strings.HasPrefix(string(message), wantPrefix) {
 		t.Errorf("noncanonical proof message: %s", message)
+	}
+	// Independently computed with Hub/Python DeviceChallenge.message().
+	wantDigest := "151b7a256dcd805d360846444510f2be2a12862de7c092bd093ca62f63d1e4e2"
+	got := sha256.Sum256(message)
+	if hex.EncodeToString(got[:]) != wantDigest {
+		t.Fatalf("Go and Hub canonical P-256 proof messages differ: %x", got)
 	}
 	mutated := c
 	mutated.RequestSHA256 = strings.Repeat("b", 64)

@@ -166,3 +166,7 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 `internal/editing/device_commit_proof.go` 复用 CloudFile 服务端 Canonical P-256 Proof；`device_bridge_windows.go` 调用 Windows Agent `.NET Bridge 1.2.1` 既有 CNG 密钥；`device_commit_broker.go` 经同源 HTTPS 发起 `commit-challenge`、签名并执行 `commit-authorize`，只接收持久 `prepared` 意图；`device_bound_transport.go` 通过统一 `Workflow` 把 Broker PREPARE 与未来 Native Publisher 分离，**缺 Native Publisher 则拒绝创建完整提交 transport**。已有测试覆盖 HTTP 提交、签名绑定、错误挑战、未知回包、禁止无权限上报。
 
 **待开发**：设备证明被 Server Native Branch 认可后的原子 `commit-file-device` 发布与 `published` 持久回执，以及真实 Agent2/Windows 1.2.1 UI 与 OS 设备授权完整接线；macOS P-256 Keychain 真实保存/配对尚未做。当前绝不由 Go 自动 fallback 到普通 Seafile `update-api`，不启用自动上传和文件增量下载。Hub `CLOUDFILE_AGENT2_EXCLUSIVE_ENABLED=false`，暂不对用户宣传受控提交已可用。
+
+### Device Broker 测试补强（2026-10-11）
+
+`internal/editing/device_manual_recovery_test.go` 从真实 TLS mock challenge/authorize 一直覆盖到本地人工快照、Journal、模拟原生发布后丢回包和查询原 `intent_id` 恢复；不重复发布、不动用户后来修改的工作副本。Go `device_commit_proof_test.go` 使用 Hub/Python 独立得出的 SHA256 golden，和 Windows .NET 的 `DeviceProofTests` 校验完全相同的 Challenge bytes。三方签名格式一致，不代表服务器已提供设备 Native Publisher；上线前必须真实 E2E。
