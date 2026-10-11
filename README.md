@@ -158,3 +158,11 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 - **旧 Go 1.x**：`com.cloudfile.local_agent` 仅供兼容老会话。本版 Go2 的配置存放 `CloudFileAgent2` 用户目录，与旧 Go 1.x 的 `CloudFileLocal` 分离，避免工作副本和升级源互相覆盖。
 - **浏览器插件 1.0.1**：同一插件依次探测 Agent2 和兼容 Host，**以能力而不是版本号或平台猜测**决定路由：Agent2 已正式声明的能力优先；`open_uri` 在 Go2 尚未实现时仍交给 Windows Agent1；`open_session` 和本地工作区查询可回退原 Go 1.x。Agent2 的未知/失败请求**绝不再自动切换旧 Host 重试**，避免重复消费票据。未发布 Checkout/Commit 不会伪装成受支持的 Native 消息。
 - **发行**：Go2 和 Agent1 可并装，但只通过各自 Host ID 启动；Windows 现有 Agent1 的 HKCU/注册表和安装文件不被 Agent2 安装脚本覆盖。Mac/Windows Go2 的新增注册脚本无需 admin；真实受控 Windows 策略、公司签名、升级/回退与 Go+.NET 独占写回 E2E 仍需验证。**Go2 2.0.1 为 DEV 源码版本，不代表正式部署。**
+
+## Windows 1.2.1 / macOS 2.0.1：Device Commit Broker 接线进展
+
+对外发布口径：原 Windows Agent1 `agent1` 分支维护 **1.0.0–1.1.x**；新 Windows `dev` 从 **1.2.1** 起（.NET UI/CNG + **内部 Go Core 2.0.1**）；macOS Go `dev` 从 **2.0.1** 起，未来 Windows Go 主控后再升 2.x 对齐。当前 Go 可执行文件均为 Go Core 2.0.1，不等于 Windows 整体对外版本为 2.x。
+
+`internal/editing/device_commit_proof.go` 复用 CloudFile 服务端 Canonical P-256 Proof；`device_bridge_windows.go` 调用 Windows Agent `.NET Bridge 1.2.1` 既有 CNG 密钥；`device_commit_broker.go` 经同源 HTTPS 发起 `commit-challenge`、签名并执行 `commit-authorize`，只接收持久 `prepared` 意图；`device_bound_transport.go` 通过统一 `Workflow` 把 Broker PREPARE 与未来 Native Publisher 分离，**缺 Native Publisher 则拒绝创建完整提交 transport**。已有测试覆盖 HTTP 提交、签名绑定、错误挑战、未知回包、禁止无权限上报。
+
+**待开发**：设备证明被 Server Native Branch 认可后的原子 `commit-file-device` 发布与 `published` 持久回执，以及真实 Agent2/Windows 1.2.1 UI 与 OS 设备授权完整接线；macOS P-256 Keychain 真实保存/配对尚未做。当前绝不由 Go 自动 fallback 到普通 Seafile `update-api`，不启用自动上传和文件增量下载。Hub `CLOUDFILE_AGENT2_EXCLUSIVE_ENABLED=false`，暂不对用户宣传受控提交已可用。
