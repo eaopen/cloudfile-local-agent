@@ -50,6 +50,15 @@ func (p *DeviceHTTPPublisher) signed(ctx context.Context, route string, body map
 }
 
 func (p *DeviceHTTPPublisher) PublishDeviceCommit(ctx context.Context, lease Lease, intent Intent) (Receipt, error) {
+	// Small files use the already verified full-file publisher. For larger
+	// files, a signed CDC missing-block plan decides between the two methods.
+	if cdcEnabled() && intent.SnapshotSize >= 16<<20 {
+		return p.publishDeviceCDC(ctx, lease, intent)
+	}
+	return p.publishDeviceFull(ctx, lease, intent)
+}
+
+func (p *DeviceHTTPPublisher) publishDeviceFull(ctx context.Context, lease Lease, intent Intent) (Receipt, error) {
 	body, err := p.broker.commitRequest(lease, intent)
 	if err != nil {
 		return Receipt{}, err
