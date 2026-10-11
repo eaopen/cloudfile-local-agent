@@ -156,5 +156,5 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 - **macOS 主程序**：Go Agent2 2.0.1 Native Host `com.cloudfile.agent2`。使用 `scripts/register-agent2-macos.sh` 在当前用户 Chrome Profile 注册，Go 直接负责现有本地查看/编辑等可用能力。独占编辑还需设备写授权和用户操作入口，不能提前声明。
 - **Windows 过渡**：现有 .NET Agent1 1.x（Host `com.cloudfile.current_agent`）仍为主 UI/本地打开/用户密钥能力；Go Agent2 2.0.1 作为**并存的独立能力组件**（`com.cloudfile.agent2`）逐步承载 Checkout/Commit 等新增业务。当前只有 Go 内部提交执行器、暂存模块，浏览器**不发布未接线的独占能力**。日后 Go 主控、.NET 仅作薄原生能力适配，无需新开发分支。
 - **旧 Go 1.x**：`com.cloudfile.local_agent` 仅供兼容老会话。本版 Go2 的配置存放 `CloudFileAgent2` 用户目录，与旧 Go 1.x 的 `CloudFileLocal` 分离，避免工作副本和升级源互相覆盖。
-- **浏览器插件 0.6.0**：同一插件依次探测 Agent2 和兼容 Host，**以能力而不是版本号或平台猜测**决定路由：Agent2 已正式声明的能力优先；`open_uri` 在 Go2 尚未实现时仍交给 Windows Agent1；`open_session` 和本地工作区查询可回退原 Go 1.x。Agent2 的未知/失败请求**绝不再自动切换旧 Host 重试**，避免重复消费票据。未发布 Checkout/Commit 不会伪装成受支持的 Native 消息。
+- **浏览器插件 1.0.1**：同一插件依次探测 Agent2 和兼容 Host，**以能力而不是版本号或平台猜测**决定路由：Agent2 已正式声明的能力优先；`open_uri` 在 Go2 尚未实现时仍交给 Windows Agent1；`open_session` 和本地工作区查询可回退原 Go 1.x。Agent2 的未知/失败请求**绝不再自动切换旧 Host 重试**，避免重复消费票据。未发布 Checkout/Commit 不会伪装成受支持的 Native 消息。
 - **发行**：Go2 和 Agent1 可并装，但只通过各自 Host ID 启动；Windows 现有 Agent1 的 HKCU/注册表和安装文件不被 Agent2 安装脚本覆盖。Mac/Windows Go2 的新增注册脚本无需 admin；真实受控 Windows 策略、公司签名、升级/回退与 Go+.NET 独占写回 E2E 仍需验证。**Go2 2.0.1 为 DEV 源码版本，不代表正式部署。**
