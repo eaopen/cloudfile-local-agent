@@ -32,12 +32,22 @@ type DeviceCommitChallenge struct {
 	RequestSHA256 string `json:"request_sha256"`
 }
 
+// ValidateLease requires a distinct server challenge operation, never a
+// reusable commit or read signature.
+func (c DeviceCommitChallenge) ValidateLease(instance, deviceID, sessionID string, now time.Time) error {
+	return c.validateFor(instance, deviceID, sessionID, "lease", now)
+}
+
 func (c DeviceCommitChallenge) Validate(instance, deviceID, sessionID string, now time.Time) error {
+	return c.validateFor(instance, deviceID, sessionID, "commit", now)
+}
+
+func (c DeviceCommitChallenge) validateFor(instance, deviceID, sessionID, expected string, now time.Time) error {
 	parsed, err := url.Parse(c.Instance)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
 		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") || strings.HasSuffix(c.Instance, "/") ||
 		strings.ToLower(parsed.Host) != parsed.Host || strings.ContainsAny(c.Instance, "%\\") ||
-		c.Instance != instance || c.DeviceID != deviceID || c.SessionID != sessionID || c.Operation != "commit" ||
+		c.Instance != instance || c.DeviceID != deviceID || c.SessionID != sessionID || c.Operation != expected ||
 		len(c.Instance) > 255 || !proofUUID.MatchString(c.DeviceID) || !proofUUID.MatchString(c.SessionID) ||
 		!proofSHA.MatchString(c.RequestSHA256) || c.ExpiresAt <= c.IssuedAt || c.ExpiresAt-c.IssuedAt > 120 ||
 		now.Unix() < c.IssuedAt || now.Unix() >= c.ExpiresAt {
@@ -53,7 +63,7 @@ func (c DeviceCommitChallenge) Validate(instance, deviceID, sessionID string, no
 func (c DeviceCommitChallenge) Message() ([]byte, error) {
 	// json.Marshal sorts object keys, matching the Python DeviceChallenge.message
 	// canonical sorted compact JSON; no private credentials enter the message.
-	if c.Operation != "commit" {
+	if c.Operation != "commit" && c.Operation != "lease" {
 		return nil, errors.New("unsupported signing action")
 	}
 	obj := map[string]any{
@@ -108,4 +118,28 @@ func VerifyP256Signature(publicKey *ecdsa.PublicKey, c DeviceCommitChallenge, si
 	}
 	digest := sha256.Sum256(msg)
 	return ecdsa.Verify(publicKey, digest[:], new(big.Int).SetBytes(raw[:32]), new(big.Int).SetBytes(raw[32:]))
+}
+
+// SignLeaseWithP256 is the same protected signer, but only for a current
+// "lease" handoff challenge. A commit nonce cannot be used for this operation.
+func SignLeaseWithP256(key *ecdsa.PrivateKey, c DeviceCommitChallenge, instance, deviceID, sessionID string, now time.Time) (string, error) {
+	if key == nil || key.Curve == nil || key.Curve.Params().Name != "P-256" {
+		return "", errors.New("P-256 device signing key required")
+	}
+	if err := c.ValidateLease(instance, deviceID, sessionID, now); err != nil {
+		return "", err
+	}
+	message, err := c.Message()
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(message)
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		return "", err
+	}
+	var raw [64]byte
+	r.FillBytes(raw[:32])
+	s.FillBytes(raw[32:])
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }

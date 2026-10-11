@@ -19,9 +19,27 @@ import (
 // challenges to the existing .NET/CNG current-user device key. The helper is
 // shipped with Windows Agent1 1.2.1, which continues to own the native UI.
 // No browser cookie, raw file bytes or Seafile password enters the bridge.
+func SignLeaseWithWindowsBridge(ctx context.Context, exe string, challenge DeviceCommitChallenge,
+	instance, deviceID, sessionID string) (string, error) {
+	return signWithWindowsBridge(ctx, exe, challenge, instance, deviceID, sessionID, "lease")
+}
+
 func SignCommitWithWindowsBridge(ctx context.Context, exe string,
 	challenge DeviceCommitChallenge, instance, deviceID, sessionID string) (string, error) {
-	if err := challenge.Validate(instance, deviceID, sessionID, time.Now()); err != nil {
+	return signWithWindowsBridge(ctx, exe, challenge, instance, deviceID, sessionID, "commit")
+}
+
+func signWithWindowsBridge(ctx context.Context, exe string,
+	challenge DeviceCommitChallenge, instance, deviceID, sessionID, operation string) (string, error) {
+	var err error
+	if operation == "lease" {
+		err = challenge.ValidateLease(instance, deviceID, sessionID, time.Now())
+	} else if operation == "commit" {
+		err = challenge.Validate(instance, deviceID, sessionID, time.Now())
+	} else {
+		return "", errors.New("unsupported fixed device proof")
+	}
+	if err != nil {
 		return "", err
 	}
 	if !filepath.IsAbs(exe) || filepath.Ext(exe) != ".exe" {
@@ -38,7 +56,7 @@ func SignCommitWithWindowsBridge(ctx context.Context, exe string,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, exe, "--sign-commit")
+	command := exec.CommandContext(ctx, exe, "--sign-"+operation)
 	command.Stdin = bytes.NewReader(body)
 	command.Stderr = io.Discard
 	var output bytes.Buffer

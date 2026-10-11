@@ -26,6 +26,9 @@ const version = "2.0.1"
 
 func main() {
 	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
+	checkoutInit := flag.Bool("init-checkout-stdin", false, "initialize a signed device Checkout with a durable journal")
+	checkoutInspect := flag.Bool("inspect-checkout-stdin", false, "inspect one local pending intent without secret output")
+	checkoutRenew := flag.Bool("renew-checkout-stdin", false, "renew one active device Checkout without upload")
 	pairingAction := flag.String("pairing", "", "macOS local enrollment: start, sign, confirm, cancel")
 	pairingInstance := flag.String("pairing-instance", "", "explicit HTTPS instance for enrollment")
 	pairingAlias := flag.String("pairing-key", "", "local pending enrollment key alias")
@@ -44,6 +47,33 @@ func main() {
 	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
+	if *checkoutRenew {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("Checkout renewal accepts only local stdin"))
+		}
+		if err := runCheckoutRenew(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *checkoutInspect {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("checkout inspection accepts only local stdin"))
+		}
+		if err := runCheckoutInspect(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *checkoutInit {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("checkout initialization accepts only local stdin"))
+		}
+		if err := runCheckoutInit(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *editUpload {
 		if flag.NFlag() != 1 || flag.NArg() != 0 {
 			fail(fmt.Errorf("edit upload accepts only local stdin"))

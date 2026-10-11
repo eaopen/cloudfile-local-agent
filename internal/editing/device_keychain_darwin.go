@@ -18,8 +18,17 @@ func KeychainCommitSigner(alias, thumbprint, instance, deviceID, sessionID strin
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if err := challenge.Validate(instance, deviceID, sessionID, time.Now()); err != nil {
-			return "", err
+		var validateErr error
+		switch challenge.Operation {
+		case "lease":
+			validateErr = challenge.ValidateLease(instance, deviceID, sessionID, time.Now())
+		case "commit":
+			validateErr = challenge.Validate(instance, deviceID, sessionID, time.Now())
+		default:
+			return "", errors.New("fixed signed device operation required")
+		}
+		if validateErr != nil {
+			return "", validateErr
 		}
 		key, err := mackey.Open(alias)
 		if err != nil {
