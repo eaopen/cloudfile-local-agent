@@ -39,12 +39,17 @@ func runEditUpload(input io.Reader, output io.Writer) error {
 	if strictComponentJSON(data, &req) != nil || !device.ID.MatchString(req.SessionID) || !device.ID.MatchString(req.DeviceID) || device.Origin(req.Instance) != nil || !req.UserConfirmed {
 		return errors.New("explicit local editing request required")
 	}
-	if req.Action != "commit" && req.Action != "checkin" && req.Action != "recover" {
+	if req.Action != "commit" && req.Action != "checkin" &&
+		req.Action != "recover" && req.Action != "abandon" {
 		return errors.New("unsupported manual operation")
 	}
 	if req.Action == "recover" {
 		if req.WorkingCopy != "" || !device.ID.MatchString(req.IntentID) {
 			return errors.New("original recovery intent required")
+		}
+	} else if req.Action == "abandon" {
+		if req.WorkingCopy != "" || req.IntentID != "" {
+			return errors.New("Checkout abandonment cannot nominate file content")
 		}
 	} else if !filepath.IsAbs(req.WorkingCopy) || req.IntentID != "" {
 		return errors.New("absolute working copy required")
@@ -91,6 +96,22 @@ func runEditUpload(input io.Reader, output io.Writer) error {
 	// This is an independent CLI process, not a Native Messaging connection.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	if req.Action == "abandon" {
+		state := worker.Workflow.State()
+		if state.Pending != nil || state.Closed {
+			return errors.New("resolve pending Intent before releasing Checkout")
+		}
+		if err := broker.AbandonCheckout(ctx, state.Lease); err != nil {
+			return errors.New("Checkout release unconfirmed; retain private Journal")
+		}
+		state.Closed = true
+		state.Lease.Token = ""
+		if err := (editing.FileJournal{Path: filepath.Join(directory, "journal.json")}).Save(state); err != nil {
+			return errors.New("Checkout released; local Journal update unconfirmed")
+		}
+		return json.NewEncoder(output).Encode(map[string]any{
+			"session_id": req.SessionID, "state": "abandoned", "released": true})
+	}
 	if req.Action == "recover" {
 		state := worker.Workflow.State()
 		if state.Pending != nil && state.Pending.ID == req.IntentID {

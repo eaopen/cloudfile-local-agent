@@ -100,8 +100,10 @@ func runOptimisticUpload(input io.Reader, output io.Writer) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("trusted private session directory required")
 	}
-	pending := filepath.Join(directory, "original-intent.json")
-	published := filepath.Join(directory, "published.json")
+	// v0.7 permits another EXPLICIT save after native publication advanced
+	// the session base. Each original File ID owns ONE immutable upload Intent,
+	// so an old pending snapshot is never silently overwritten by a new save.
+	pending, published := optimisticEvidencePaths(directory, req.BaseFileID)
 	if info, statErr := os.Lstat(pending); statErr == nil {
 		// A local receipt must never be reusable across paired origins,
 		// devices or file baselines. Unknown results are inspected, NOT resent.
@@ -207,4 +209,21 @@ func makeOptimisticUploader(req optimisticUploadRequest) (*editing.OptimisticUpl
 		return nil, err
 	}
 	return editing.NewOptimisticUploader(broker)
+}
+
+// Legacy v0.7 working copies (created before save-and-continue) keep their
+// original paths. New saves use base-specific journals within the same
+// private session, without changing old snapshot/receipt ownership.
+func optimisticEvidencePaths(directory, base string) (string, string) {
+	old := filepath.Join(directory, "original-intent.json")
+	raw, err := os.ReadFile(old)
+	if err == nil {
+		var existing optimisticSaved
+		if strictComponentJSON(raw, &existing) == nil &&
+			existing.Intent.ExpectedFileID == base {
+			return old, filepath.Join(directory, "published.json")
+		}
+	}
+	return filepath.Join(directory, base+"-original-intent.json"),
+		filepath.Join(directory, base+"-published.json")
 }

@@ -52,8 +52,9 @@ func TestOptimisticLocalIntentCanBeInspectedWithoutReupload(t *testing.T) {
 	}
 	altered := request
 	altered.BaseFileID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if _, err = inspect(altered); err == nil {
-		t.Fatal("different original file baseline inspected another intent")
+	next, err := inspect(altered)
+	if err != nil || next["state"] != "not-found" {
+		t.Fatalf("new baseline must have an independent empty journal: %+v %v", next, err)
 	}
 	altered = request
 	altered.DeviceID = "44444444-4444-4444-8444-444444444444"
@@ -68,5 +69,13 @@ func TestOptimisticLocalIntentCanBeInspectedWithoutReupload(t *testing.T) {
 	saved, err := inspect(request)
 	if err != nil || saved["state"] != "published" {
 		t.Fatalf("durable native confirmation missing %+v %v", saved, err)
+	}
+	// A second explicit save is a different base, never a rewrite of the
+	// first original Intent or reuse of its published acknowledgement.
+	newPending, newPublished := optimisticEvidencePaths(folder,
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if newPending == filepath.Join(folder, "original-intent.json") ||
+		newPublished == filepath.Join(folder, "published.json") {
+		t.Fatal("continued save reused old immutable journal")
 	}
 }
