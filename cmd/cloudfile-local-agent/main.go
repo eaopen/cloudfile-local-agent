@@ -25,6 +25,7 @@ import (
 const version = "2.0.1"
 
 func main() {
+	optimisticUpload := flag.Bool("optimistic-upload-stdin", false, "explicit one-shot paired-device optimistic local file upload")
 	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
 	checkoutInit := flag.Bool("init-checkout-stdin", false, "initialize a signed device Checkout with a durable journal")
 	checkoutInspect := flag.Bool("inspect-checkout-stdin", false, "inspect one local pending intent without secret output")
@@ -70,6 +71,15 @@ func main() {
 			fail(fmt.Errorf("checkout initialization accepts only local stdin"))
 		}
 		if err := runCheckoutInit(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *optimisticUpload {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("optimistic upload requires a single local stdin request"))
+		}
+		if err := runOptimisticUpload(os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 		return

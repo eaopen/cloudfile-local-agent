@@ -56,10 +56,19 @@ func (p *DeviceHTTPPublisher) cdcGrant(ctx context.Context, lease Lease, intent 
 
 func (p *DeviceHTTPPublisher) cdcPost(ctx context.Context, operation, grant string,
 	intent Intent, body io.Reader, size int64, contentType, blockID string) ([]byte, error) {
+	return p.cdcPostWithPrefix(ctx, "commit", operation, grant, intent,
+		body, size, contentType, blockID)
+}
+
+func (p *DeviceHTTPPublisher) cdcPostWithPrefix(ctx context.Context, prefix, operation, grant string,
+	intent Intent, body io.Reader, size int64, contentType, blockID string) ([]byte, error) {
+	if prefix != "commit" && prefix != "optimistic" {
+		return nil, errors.New("fixed device CDC authorization mode required")
+	}
 	if operation != "plan" && operation != "stage" && operation != "publish" {
 		return nil, errors.New("fixed CDC operation required")
 	}
-	target := p.broker.instance + "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/commit-block-" + operation + "/"
+	target := p.broker.instance + "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/" + prefix + "-block-" + operation + "/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
 		return nil, errors.New("invalid fixed CDC target")
@@ -87,10 +96,10 @@ func (p *DeviceHTTPPublisher) cdcPost(ctx context.Context, operation, grant stri
 }
 
 type deviceStagedCDC struct {
-	publisher *DeviceHTTPPublisher
-	lease     Lease
-	intent    Intent
-	expected  []string
+	grant    func(context.Context) (string, error)
+	post     func(context.Context, string, string, Intent, io.Reader, int64, string, string) ([]byte, error)
+	intent   Intent
+	expected []string
 }
 
 func (s *deviceStagedCDC) Missing(_ context.Context, ordered []string) ([]string, error) {
@@ -111,11 +120,11 @@ func (s *deviceStagedCDC) Put(ctx context.Context, id string, raw []byte) error 
 	if len(raw) < 1 || len(raw) > blockdelta.MaxSize {
 		return errors.New("invalid block byte budget")
 	}
-	grant, err := s.publisher.cdcGrant(ctx, s.lease, s.intent)
+	grant, err := s.grant(ctx)
 	if err != nil {
 		return err
 	}
-	data, err := s.publisher.cdcPost(ctx, "stage", grant, s.intent,
+	data, err := s.post(ctx, "stage", grant, s.intent,
 		bytes.NewReader(raw), int64(len(raw)), "application/octet-stream", id)
 	if err != nil {
 		return err
@@ -132,17 +141,20 @@ func (s *deviceStagedCDC) Put(ctx context.Context, id string, raw []byte) error 
 	return nil
 }
 
-func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease, intent Intent) (Receipt, error) {
+func executeSharedCDC(ctx context.Context, intent Intent,
+	grantFn func(context.Context) (string, error),
+	postFn func(context.Context, string, string, Intent, io.Reader, int64, string, string) ([]byte, error),
+) ([]byte, string, bool, error) {
 	if intent.SnapshotSize == 0 || intent.SnapshotSize > maxSnapshotBytes {
-		return Receipt{}, errors.New("CDC P0 limited to existing 128 MiB manual snapshots")
+		return nil, "", false, errors.New("CDC P0 limited to existing 128 MiB manual snapshots")
 	}
 	manifest, err := blockdelta.ScanSnapshot(intent.Snapshot, 1)
 	if err != nil {
-		return Receipt{}, err
+		return nil, "", false, err
 	}
 	if manifest.SHA256 != intent.Digest || manifest.Size != intent.SnapshotSize ||
 		len(manifest.Blocks) == 0 || len(manifest.Blocks) > 64 {
-		return Receipt{}, errors.New("immutable Seafile CDC manifest mismatch")
+		return nil, "", false, errors.New("immutable Seafile CDC manifest mismatch")
 	}
 	type manifestBlock struct {
 		ID   string `json:"id"`
@@ -160,16 +172,16 @@ func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease,
 	}{manifest.FileID, manifest.Size, manifest.SHA256, blocks}
 	payload, err := json.Marshal(plan)
 	if err != nil || len(payload) > 65536 {
-		return Receipt{}, errors.New("CDC plan exceeds bounded wire budget")
+		return nil, "", false, errors.New("CDC plan exceeds bounded wire budget")
 	}
-	grant, err := p.cdcGrant(ctx, lease, intent)
+	grant, err := grantFn(ctx)
 	if err != nil {
-		return Receipt{}, err
+		return nil, "", false, err
 	}
-	result, err := p.cdcPost(ctx, "plan", grant, intent,
+	result, err := postFn(ctx, "plan", grant, intent,
 		bytes.NewReader(payload), int64(len(payload)), "application/json", "")
 	if err != nil {
-		return Receipt{}, err
+		return nil, "", false, err
 	}
 	var planned struct {
 		FileID       string   `json:"file_id"`
@@ -179,7 +191,7 @@ func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease,
 	}
 	if json.Unmarshal(result, &planned) != nil || planned.FileID != manifest.FileID ||
 		planned.IntentID != intent.ID || planned.SnapshotSize != manifest.Size {
-		return Receipt{}, errors.New("unconfirmed server CDC plan")
+		return nil, "", false, errors.New("unconfirmed server CDC plan")
 	}
 	// Seafile's raw-block IDs are content-addressed; dedupe them when
 	// estimating bytes, but retain original ordered blocks for File ID.
@@ -195,7 +207,7 @@ func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease,
 	for _, id := range planned.Missing {
 		size, exists := byID[id]
 		if !exists || missing[id] {
-			return Receipt{}, errors.New("native missing-block response cannot be trusted")
+			return nil, "", false, errors.New("native missing-block response cannot be trusted")
 		}
 		missing[id] = true
 		missingBytes += size
@@ -203,30 +215,46 @@ func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease,
 	if !cdcWorthwhile(manifest.Size, missingBytes) {
 		// A successful plan response is NOT a file publication, so switching
 		// transport here is safe. The publisher still uses the same Intent.
-		return p.publishDeviceFull(ctx, lease, intent)
+		return nil, "", false, nil
 	}
-	stager := &deviceStagedCDC{publisher: p, lease: lease, intent: intent, expected: planned.Missing}
+	stager := &deviceStagedCDC{grant: grantFn, post: postFn, intent: intent, expected: planned.Missing}
 	staged, err := blockdelta.StageSnapshotOnly(ctx, intent.Snapshot, 1, stager)
 	if err != nil || staged.Manifest.FileID != manifest.FileID ||
 		staged.Manifest.SHA256 != manifest.SHA256 {
-		return Receipt{}, errors.New("CDC stage incomplete; recover original Intent")
+		return nil, "", false, errors.New("CDC stage incomplete; recover original Intent")
 	}
 	// Native publish is the ONLY write to the file path. It revalidates every
 	// previously staged/reused block and Guard inside the Branch CAS.
-	grant, err = p.cdcGrant(ctx, lease, intent)
+	grant, err = grantFn(ctx)
+	if err != nil {
+		return nil, "", false, err
+	}
+	final, err := postFn(ctx, "publish", grant, intent, strings.NewReader(""), 0,
+		"application/octet-stream", "")
+	if err != nil {
+		return nil, "", false, err
+	}
+	return final, manifest.FileID, true, nil
+}
+
+func (p *DeviceHTTPPublisher) publishDeviceCDC(ctx context.Context, lease Lease, intent Intent) (Receipt, error) {
+	grantFn := func(ctx context.Context) (string, error) { return p.cdcGrant(ctx, lease, intent) }
+	postFn := func(ctx context.Context, op, grant string, intent Intent, r io.Reader,
+		size int64, typ, id string) ([]byte, error) {
+		return p.cdcPost(ctx, op, grant, intent, r, size, typ, id)
+	}
+	data, fileID, used, err := executeSharedCDC(ctx, intent, grantFn, postFn)
 	if err != nil {
 		return Receipt{}, err
 	}
-	final, err := p.cdcPost(ctx, "publish", grant, intent, strings.NewReader(""), 0,
-		"application/octet-stream", "")
-	if err != nil {
-		return Receipt{}, err
+	if !used {
+		return p.publishDeviceFull(ctx, lease, intent)
 	}
 	var reply struct {
 		Intent Receipt `json:"intent"`
 	}
-	if json.Unmarshal(final, &reply) != nil || reply.Intent.FileID != manifest.FileID {
-		return Receipt{}, errors.New("native CDC file identity unconfirmed")
+	if json.Unmarshal(data, &reply) != nil || reply.Intent.FileID != fileID {
+		return Receipt{}, errors.New("native guarded CDC File ID unconfirmed")
 	}
 	if err = validateDeviceReceipt(reply.Intent, intent, true); err != nil {
 		return Receipt{}, err
@@ -240,8 +268,5 @@ func cdcEnabled() bool { return os.Getenv("CLOUDFILE_AGENT2_CDC_ENABLED") == "1"
 // Requiring at least 4 MiB saved and <=75% missing avoids paying CDC request
 // and hashing cost for compressed or rewritten documents that reuse no blocks.
 func cdcWorthwhile(total, missing int64) bool {
-	if total < 16<<20 || missing < 0 || missing > total {
-		return false
-	}
-	return total-missing >= 4<<20 && missing*4 <= total*3
+	return PickCDC(total, missing)
 }

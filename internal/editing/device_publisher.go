@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,62 +97,16 @@ func (p *DeviceHTTPPublisher) publishDeviceFull(ctx context.Context, lease Lease
 	if err := p.signed(ctx, "commit-challenge", body); err != nil {
 		return Receipt{}, err
 	}
-	var grant struct {
-		Ticket        string `json:"ticket"`
-		ExpiresIn     int    `json:"expires_in"`
-		IntentID      string `json:"intent_id"`
-		Digest        string `json:"content_digest"`
-		Size          int64  `json:"snapshot_size"`
-		NativePublish bool   `json:"native_device_publish"`
-		Transfer      struct {
-			Path          string `json:"path"`
-			Method        string `json:"method"`
-			Authorization string `json:"authorization"`
-			Redirects     bool   `json:"redirects"`
-		} `json:"transfer"`
-	}
+	var grant SharedUploadGrant
 	if err := p.broker.request(ctx, "commit-upload-authorize", body, &grant); err != nil {
 		return Receipt{}, err
 	}
-	if len(grant.Ticket) < 43 || len(grant.Ticket) > 14000 || !uploadTicket.MatchString(grant.Ticket) || grant.ExpiresIn < 1 || grant.ExpiresIn > 60 ||
-		grant.IntentID != intent.ID || grant.Digest != intent.Digest || grant.Size != size || !grant.NativePublish ||
-		grant.Transfer.Path != "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/commit-upload/" || grant.Transfer.Method != "POST" ||
-		grant.Transfer.Authorization != "Bearer" || grant.Transfer.Redirects {
-		return Receipt{}, errors.New("native upload grant does not match captured intent")
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.broker.instance+"/api/v2.1/cloudfile/extensions/local-edit/v1/agent/commit-upload/", staged)
+	const endpoint = "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/commit-upload/"
+	data, err := UploadFrozenFull(ctx, p.broker, grant, intent, endpoint, staged, info.Size())
 	if err != nil {
-		return Receipt{}, errors.New("invalid upload request")
-	}
-	request.ContentLength = info.Size()
-	if info.Size() == 0 {
-		request.Body = http.NoBody
-	}
-	request.Header.Set("Content-Type", "application/octet-stream")
-	request.Header.Set("Authorization", "Bearer "+grant.Ticket)
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Idempotency-Key", intent.ID)
-	client := *p.broker.client
-	client.Timeout = 5 * time.Minute
-	response, err := client.Do(request)
-	if err != nil {
-		return Receipt{}, errors.New("publication response unknown; recover original intent")
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 65537))
-	if err != nil || len(data) > 65536 || response.StatusCode != http.StatusOK {
-		return Receipt{}, errors.New("publication not confirmed; recover original intent")
-	}
-	var result struct {
-		Intent Receipt `json:"intent"`
-	}
-	if json.Unmarshal(data, &result) != nil {
-		return Receipt{}, errors.New("invalid publication receipt")
-	}
-	if err := validateDeviceReceipt(result.Intent, intent, true); err != nil {
 		return Receipt{}, err
 	}
-	return result.Intent, nil
+	return DecodeFullReceipt(data, intent)
 }
 
 func (p *DeviceHTTPPublisher) QueryDeviceCommit(ctx context.Context, intent Intent) (Receipt, error) {
