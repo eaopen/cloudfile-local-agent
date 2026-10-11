@@ -22,5 +22,5 @@ func systemRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "CloudFileLocal", "workspace"), nil
+	return filepath.Join(base, "CloudFileAgent2", "workspace"), nil
 }

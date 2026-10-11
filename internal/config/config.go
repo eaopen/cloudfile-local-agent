@@ -31,7 +31,7 @@ func FilePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "CloudFileLocal", "config.json"), nil
+	return filepath.Join(dir, "CloudFileAgent2", "config.json"), nil
 }
 
 func Load() (Config, error) {

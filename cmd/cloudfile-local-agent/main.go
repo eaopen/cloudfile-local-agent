@@ -23,10 +23,11 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "1.0.1"
+const version = "2.0.1"
 
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
+	showVersion := flag.Bool("version", false, "print Agent2 version")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
@@ -38,6 +39,10 @@ func main() {
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	if *allowOrigin != "" {
 		if _, err := config.AddOrigin(*allowOrigin); err != nil {
 			fail(err)
@@ -108,6 +113,9 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		response := nativehost.Response{
 			OK:           true,
 			Version:      version,
+			AgentFamily:  "agent2",
+			Platform:     runtime.GOOS,
+			Capabilities: []string{"open_session", "open_session_file", "query_local_file", "query_local_folder", "open_workspace", "check_update"},
 			Applications: appfinder.Names(),
 		}
 		// 回传自身可执行文件路径，供扩展 popup 拼出「可直接复制运行」的升级命令。

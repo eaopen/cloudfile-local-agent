@@ -28,6 +28,9 @@ type Response struct {
 	OK               bool     `json:"ok"`
 	Error            string   `json:"error,omitempty"`
 	Version          string   `json:"version,omitempty"`
+	AgentFamily      string   `json:"agent_family,omitempty"`
+	Platform         string   `json:"platform,omitempty"`
+	Capabilities     []string `json:"capabilities,omitempty"`
 	ExecutablePath   string   `json:"executable_path,omitempty"`
 	Applications     []string `json:"applications,omitempty"`
 	WorkspaceRoot    string   `json:"workspace_root,omitempty"`

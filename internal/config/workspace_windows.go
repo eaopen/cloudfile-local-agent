@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-func preferredRoots() []string { return []string{`D:\CloudFileLocal\workspace`} }
+func preferredRoots() []string { return []string{`D:\CloudFileAgent2\workspace`} }
 func usableWorkspace(root string) bool {
 	if root == "" {
 		return false
@@ -28,5 +28,5 @@ func systemRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "CloudFileLocal", "workspace"), nil
+	return filepath.Join(base, "CloudFileAgent2", "workspace"), nil
 }

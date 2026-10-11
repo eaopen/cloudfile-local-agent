@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const ManifestName = "com.cloudfile.local_agent.json"
+const ManifestName = "com.cloudfile.agent2.json"
 
 // resolveInstalledHome accepts both layouts used by the 1.0.x installer:
 // a versioned EXE in <root> and a self-updated EXE in <root>/bin.
@@ -21,7 +21,7 @@ func resolveInstalledHome(executable string) string {
 		candidates = append(candidates, filepath.Dir(dir))
 	}
 	for _, root := range candidates {
-		info, err := os.Lstat(filepath.Join(root, ManifestName))
+		info, err := os.Stat(filepath.Join(root, ManifestName))
 		if err == nil && info.Mode().IsRegular() {
 			return root
 		}
@@ -40,9 +40,9 @@ func Dir() string {
 	}
 	// Fallback for an unpacked/unregistered release. A normal user may use
 	// %APPDATA% on Windows and XDG_CONFIG_HOME on Unix without elevation.
-	base, err := os.UserConfigDir()
+	base, err := os.UserCacheDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "CloudFileLocal")
+		return filepath.Join(os.TempDir(), "CloudFileAgent2")
 	}
-	return filepath.Join(base, "CloudFileLocal")
+	return filepath.Join(base, "CloudFileAgent2")
 }
