@@ -3,6 +3,12 @@
 // No OAuth, Checkout, Commit, upload, renewal, or browser authority lives here.
 import AppKit
 import Foundation
+import Darwin
+
+struct TaskNotice: Decodable {
+    let kind: String
+    let file_name: String
+}
 
 struct TaskList: Decodable {
     let tasks: [TaskEntry]
@@ -60,6 +66,9 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
     private var refreshing = false
     private var tasks: [TaskEntry] = []
     private var timer: Timer?
+    private var watcher: Process?
+    private var noticePanel: NSPanel?
+    private var noticeHide: DispatchWorkItem?
 
     init(binary: URL) { self.taskcenterBinary = binary }
 
@@ -102,9 +111,85 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         status = item
 
         refreshTasks()
+        startWatcher()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.refreshTasks()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        noticeHide?.cancel()
+        if let proc = watcher, proc.isRunning { proc.terminate() }
+    }
+
+    // The watch command is a local-only observer. It cannot publish or Checkin.
+    private func startWatcher() {
+        let process = Process()
+        process.executableURL = taskcenterBinary
+        process.arguments = ["--watch"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            watcher = process
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let handle = output.fileHandleForReading
+                var buffer = Data()
+                while true {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty { break }
+                    buffer.append(chunk)
+                    while let newline = buffer.firstIndex(of: 10) {
+                        let packet = buffer.prefix(upTo: newline)
+                        buffer.removeSubrange(...newline)
+                        guard let notice = try? JSONDecoder().decode(TaskNotice.self, from: Data(packet)),
+                              notice.kind == "local-saved" || notice.kind == "needs-review" else { continue }
+                        DispatchQueue.main.async { [weak self] in
+                            self?.showNotice(notice)
+                            self?.refreshTasks()
+                        }
+                    }
+                    if buffer.count > 65536 { buffer.removeAll() }
+                }
+            }
+        } catch {
+            content.string = "本地保存提示暂不可用。任务列表仍可查询。"
+        }
+    }
+
+    // Passive, short-lived tip: does not activate the application.
+    private func showNotice(_ event: TaskNotice) {
+        let message = event.kind == "local-saved"
+            ? "\(event.file_name)：本地已修改，尚未上传"
+            : "\(event.file_name)：本地文件需要检查"
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let rect = NSRect(x: screen.maxX - 370, y: screen.maxY - 72, width: 350, height: 56)
+        if noticePanel == nil {
+            let panel = NSPanel(contentRect: rect,
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.level = .floating
+            panel.isOpaque = false
+            panel.backgroundColor = NSColor.windowBackgroundColor
+            panel.hasShadow = true
+            panel.ignoresMouseEvents = true
+            panel.collectionBehavior = [.canJoinAllSpaces]
+            let field = NSTextField(labelWithString: "")
+            field.frame = NSRect(x: 12, y: 10, width: 326, height: 36)
+            field.maximumNumberOfLines = 2
+            field.font = NSFont.systemFont(ofSize: 13)
+            panel.contentView?.addSubview(field)
+            noticePanel = panel
+        }
+        noticePanel?.setFrame(rect, display: true)
+        if let field = noticePanel?.contentView?.subviews.first as? NSTextField {
+            field.stringValue = message
+        }
+        noticePanel?.orderFrontRegardless()
+        noticeHide?.cancel()
+        let hide = DispatchWorkItem { [weak self] in self?.noticePanel?.orderOut(nil) }
+        noticeHide = hide
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: hide)
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -217,6 +302,16 @@ guard arguments.count == 3, arguments[1] == "--taskcenter-bin",
       arguments[2].hasPrefix("/") else {
     fputs("Usage: CloudFileTaskCenterPreview --taskcenter-bin /absolute/path/to/cloudfile-taskcenter\n", stderr)
     exit(2)
+}
+let lockDirectory = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/CloudFileTaskCenterPreview")
+try? FileManager.default.createDirectory(at: lockDirectory,
+    withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+let lockFile = lockDirectory.appendingPathComponent("preview.lock")
+let lockFD = open(lockFile.path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+    fputs("CloudFile TaskCenter preview is already running or lock is unavailable.\n", stderr)
+    exit(1)
 }
 let app = NSApplication.shared
 let delegate = TaskCenterPreview(binary: URL(fileURLWithPath: arguments[2]))
