@@ -69,8 +69,8 @@ func (c DeviceCommitChallenge) Message() ([]byte, error) {
 	return append([]byte("cloudfile.device-proof.v1\n"), body...), nil
 }
 
-// SignWithP256 is the native Go/macOS signing adapter when the host supplies a
-// protected P-256 signer. Do not serialize private keys or install a user
+// SignWithP256 supports in-memory P-256 protocol fixtures. Production macOS
+// signing uses KeychainCommitSigner without exposing private key material. Do not serialize private keys or install a user
 // unprotected PEM file as part of this application.
 func SignWithP256(key *ecdsa.PrivateKey, c DeviceCommitChallenge, instance, deviceID, sessionID string, now time.Time) (string, error) {
 	if key == nil || key.Curve == nil || key.Curve.Params().Name != "P-256" {

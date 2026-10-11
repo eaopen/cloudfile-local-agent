@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-11",
+  "complete_product": false,
+  "deployed": false,
+  "committed": false,
+  "feature_default": false,
+  "artifacts": [
+    {
+      "path": "/Users/bobo/workspace/openfile/eap-cloudfile/agent/dist/cloudfile-windows-agent-1.2.1-go2.0.1-win-x64.zip",
+      "sha256": "45eae0fb6609c606c888f3cbdf65ffe57a95865d22246f335a7ddefb04ba7258",
+      "size": 124777298
+    },
+    {
+      "path": "/Users/bobo/workspace/openfile/cloudfile-local-agent/dist/cloudfile-agent2-2.0.1-macos-arm64.zip",
+      "sha256": "6d9d0467353956149bc12a74a6aebc1df3edbe8a8bdcee76629bedc78ab83bab",
+      "size": 6103392
+    },
+    {
+      "path": "/Users/bobo/workspace/openfile/cloudfile-local-agent/dist/cloudfile-agent2-2.0.1-macos-amd64.zip",
+      "sha256": "c613199e6dd8aca8414b9f1ea3db6df64d617776cf27e69300183ce90daca969",
+      "size": 6795970
+    }
+  ],
+  "verified": [
+    "Go full tests and vet",
+    "Go race: editing and command entry",
+    "Windows x64 cross-build and self-contained single-Host ZIP build",
+    "macOS arm64 and amd64 offline ZIP build; CRC and SHA-256 verified",
+    "macOS isolated user install and portable unregister tests",
+    "Hub 51 editing, HTTP, contract and host regression tests passed",
+    "Hub 28 device SQL and local session tests passed; final expanded device SQL suite 5 passed",
+    "Real isolated MariaDB: production native SQL shared mutation cases, proof replay/revocation, session baseline and Checkin recovery, atomic rollback",
+    "Linux ARM64 full native seaf-server compile and link",
+    "Pre-commit review: reject native JSON construction failure; rebuilt native server successfully"
+  ],
+  "limitations": [
+    "No running native server plus desktop GUI E2E acceptance",
+    "Checkout/download/Journal initialization desktop flow not wired to the local upload CLI",
+    "macOS ad-hoc development signature; no Developer ID notarization",
+    "Windows physical desktop and Intel Mac not exercised"
+  ],
+  "native_build": {
+    "path": "/tmp/cf-device-native-build/seaf-server",
+    "sha256": "56f968a6b9f03a15929430b9d0c1cc556d1a321d0012ea19919b190ff057d34e"
+  }
+}

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
@@ -26,12 +25,18 @@ import (
 const version = "2.0.1"
 
 func main() {
+	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
+	pairingAction := flag.String("pairing", "", "macOS local enrollment: start, sign, confirm, cancel")
+	pairingInstance := flag.String("pairing-instance", "", "explicit HTTPS instance for enrollment")
+	pairingAlias := flag.String("pairing-key", "", "local pending enrollment key alias")
+	component := flag.Bool("component", false, "serve one bounded internal component JSON request")
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
 	showVersion := flag.Bool("version", false, "print Agent2 version")
 	editingCapabilities := flag.Bool("editing-capabilities", false, "report supported local editing stages, without credentials")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
+	setUpdateKey := flag.String("set-update-key", "", "pin a local P-256 release public PEM file")
 	setUpdateSource := flag.String("set-update-source", "", "record the static update.json URL")
 	showConfig := flag.Bool("show-config", false, "print local configuration")
 	validateConfig := flag.Bool("validate-config", false, "validate local configuration")
@@ -39,7 +44,34 @@ func main() {
 	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
+	if *editUpload {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("edit upload accepts only local stdin"))
+		}
+		if err := runEditUpload(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *pairingAction != "" {
+		if flag.NFlag() != 2 || flag.NArg() != 0 {
+			fail(fmt.Errorf("pairing requires exactly action and instance or key"))
+		}
+		if err := runPairing(*pairingAction, *pairingInstance, *pairingAlias); err != nil {
+			fail(err)
+		}
+		return
+	}
 
+	if *component {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			os.Exit(1)
+		}
+		if err := serveComponent(os.Stdin, os.Stdout); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return
@@ -58,6 +90,24 @@ func main() {
 	}
 	if *allowOrigin != "" {
 		if _, err := config.AddOrigin(*allowOrigin); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *setUpdateKey != "" {
+		data, err := os.ReadFile(*setUpdateKey)
+		if err != nil {
+			fail(err)
+		}
+		if _, err := update.PublicKey(string(data)); err != nil {
+			fail(err)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			fail(err)
+		}
+		cfg.UpdatePublicKey = string(data)
+		if err := config.Save(cfg); err != nil {
 			fail(err)
 		}
 		return
@@ -95,17 +145,29 @@ func main() {
 		return
 	}
 	if *checkUpdate || *applyUpdate {
+		if *applyUpdate {
+			recordUpdateResult("agent", "running")
+		}
 		if err := runUpdate(*applyUpdate); err != nil {
+			if *applyUpdate {
+				recordUpdateResult("agent", "failed")
+			}
 			logUpdate("agent update failed: %v", err)
 			fail(err)
+		}
+		if *applyUpdate {
+			recordUpdateResult("agent", "completed")
 		}
 		return
 	}
 	if *updateExtension {
+		recordUpdateResult("extension", "running")
 		if err := runUpdateExtension(); err != nil {
+			recordUpdateResult("extension", "failed")
 			logUpdate("extension update failed: %v", err)
 			fail(err)
 		}
+		recordUpdateResult("extension", "completed")
 		return
 	}
 	if *nativeHost || flag.NFlag() == 0 {
@@ -120,9 +182,9 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Upgrade with --check-update / --update / --update-extension.")
 }
 
-// A new 1.2.1 Windows bundle installs Go alongside the working .NET Agent.
+// Windows bundles Go as an internal child of the single .NET Host.
 // Do not advertise network session actions before an explicit trusted origin
-// exists. Extension dispatches to Go only for advertised operations.
+// exists. The controller delegates only advertised operations.
 func advertisedCapabilities(trustedOrigins []string) []string {
 	operations := []string{"check_update"}
 	if len(trustedOrigins) != 0 {
@@ -149,7 +211,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		}
 		if agentConfig, err := config.Load(); err == nil {
 			if len(agentConfig.AllowedOrigins) > 0 {
-				// A newly installed parallel Windows Go component MUST NOT take
+				// A newly installed internal Windows Go component MUST NOT take
 				// over an existing session until its trusted CloudFile origin is
 				// configured. Chrome routes by capabilities, not installation.
 				response.Capabilities = advertisedCapabilities(agentConfig.AllowedOrigins)
@@ -182,13 +244,23 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		}
 		// 以子进程方式运行自身的 --update：它只下载新版本并改写 native host
 		// manifest 的 path，不覆盖正在运行的二进制，所以立即返回、由子进程在后台完成。
-		return spawnSelf("--update")
+		recordUpdateResult("agent", "running")
+		result := spawnSelf("--update")
+		if !result.OK {
+			recordUpdateResult("agent", "failed")
+		}
+		return result
 	case "update_extension":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid update_extension request"}
 		}
 		// 同理：下载并解压扩展包，落盘后由扩展自己 chrome.runtime.reload() 生效。
-		return spawnSelf("--update-extension")
+		recordUpdateResult("extension", "running")
+		result := spawnSelf("--update-extension")
+		if !result.OK {
+			recordUpdateResult("extension", "failed")
+		}
+		return result
 	case "open_workspace":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid open_workspace request"}
@@ -323,10 +395,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: "cannot start local agent"}
 		}
-		command := exec.Command(executable, "--run-session", request.Path)
-		command.Stdout = nil
-		command.Stderr = os.Stderr
-		if err := command.Start(); err != nil {
+		if err := launch.Detached(executable, "--run-session", request.Path); err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
 		return nativehost.Response{OK: true}
@@ -349,11 +418,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: "cannot start local agent"}
 		}
-		command := exec.Command(executable, "--run-session-stdin")
-		command.Stdin = strings.NewReader(string(data))
-		command.Stdout = nil
-		command.Stderr = os.Stderr
-		if err := command.Start(); err != nil {
+		if err := launch.WithInput(executable, data, "--run-session-stdin"); err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
 		return nativehost.Response{OK: true}
@@ -416,7 +481,7 @@ func runUpdate(apply bool) error {
 	if agentConfig.UpdateSource == "" {
 		return fmt.Errorf("update source is not configured (set update_source in config.json)")
 	}
-	manifest, err := update.Fetch(agentConfig.UpdateSource)
+	manifest, err := fetchAgentRelease(agentConfig, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -461,7 +526,7 @@ func runUpdateExtension() error {
 	if err != nil {
 		return err
 	}
-	manifest, err := update.FetchExtension(source)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		return err
 	}
@@ -487,7 +552,7 @@ func runUpdateExtension() error {
 // printExtensionStatus reports the extension's update situation for
 // --check-update, so a field engineer can see both sides from one command.
 func printExtensionStatus(agentConfig config.Config) {
-	manifest, err := update.FetchExtensionCached(agentConfig.UpdateSource, update.ExtensionCacheTTL)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		fmt.Printf("extension: manifest unavailable (%v)\n", err)
 		return
@@ -509,11 +574,12 @@ func printExtensionStatus(agentConfig config.Config) {
 // advertise a version it cannot actually install. Nothing is ever refused
 // because of a version comparison — an available update is only a prompt.
 func describeAgentUpdate(agentConfig config.Config, response *nativehost.Response) {
+	describeUpdateResult(response)
 	response.UpdateSourceSet = agentConfig.UpdateSource != ""
 	if agentConfig.UpdateSource == "" {
 		return
 	}
-	manifest, err := update.FetchCached(agentConfig.UpdateSource, update.CacheTTL)
+	manifest, err := fetchAgentRelease(agentConfig, 2*time.Second)
 	if err != nil {
 		return
 	}
@@ -535,7 +601,7 @@ func describeExtensionUpdate(agentConfig config.Config, response *nativehost.Res
 	if agentConfig.UpdateSource == "" {
 		return
 	}
-	manifest, err := update.FetchExtensionCached(agentConfig.UpdateSource, update.ExtensionCacheTTL)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		return
 	}
@@ -592,4 +658,27 @@ func logUpdate(format string, args ...any) {
 	}
 	defer file.Close()
 	fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+// macOS releases require a locally pinned signing key. Windows uses its .NET
+// bundle updater; legacy Unix compatibility is kept separate.
+func fetchAgentRelease(cfg config.Config, timeout time.Duration) (*update.Manifest, error) {
+	if runtime.GOOS == "darwin" {
+		return update.FetchSigned(cfg.UpdateSource, cfg.UpdatePublicKey, timeout)
+	}
+	return update.FetchCached(cfg.UpdateSource, update.CacheTTL)
+}
+
+func fetchExtensionRelease(cfg config.Config) (*update.ExtensionManifest, error) {
+	if runtime.GOOS == "darwin" {
+		release, err := fetchAgentRelease(cfg, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if release.Extension == nil {
+			return nil, fmt.Errorf("signed extension artifact unavailable")
+		}
+		return release.Extension, nil
+	}
+	return update.FetchExtensionCached(cfg.UpdateSource, update.ExtensionCacheTTL)
 }

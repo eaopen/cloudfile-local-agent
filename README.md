@@ -19,7 +19,7 @@ go build -trimpath -ldflags="-s -w" -o dist/cloudfile-local-agent ./cmd/cloudfil
 ./dist/cloudfile-local-agent --allow-origin https://cloudfile.example
 ```
 
-Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native Messaging Host 注册表项；Agent 是无需安装运行时的单文件程序，不需要管理员权限，也不开放 localhost HTTP 服务。将包放在当前用户可写的固定目录即可，不必写入 Program Files 或注册系统服务。
+Windows 使用 `eap-cloudfile/agent` 构建的 .NET + Go 统一绿色包，由包内 `scripts/register-native-host.ps1` 注册唯一 Host；本仓库 dev 的独立 Windows Go 安装脚本已停用。macOS 使用 `scripts/register-agent2-macos.sh`。均无需管理员权限或预装运行时，不开放 localhost HTTP 服务。
 
 ## 本地查看与编辑规则
 
@@ -154,25 +154,37 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 
 - **共用 `dev`**：Agent2 Go 2.0.1 同时构建 macOS arm64 与 Windows amd64；平台差异通过 Go build tags/平台适配处理，不再拆成 Windows/Mac 两条开发分支。
 - **macOS 主程序**：Go Agent2 2.0.1 Native Host `com.cloudfile.agent2`。使用 `scripts/register-agent2-macos.sh` 在当前用户 Chrome Profile 注册，Go 直接负责现有本地查看/编辑等可用能力。独占编辑还需设备写授权和用户操作入口，不能提前声明。
-- **Windows 过渡**：现有 .NET Agent1 1.x（Host `com.cloudfile.current_agent`）仍为主 UI/本地打开/用户密钥能力；Go Agent2 2.0.1 作为**并存的独立能力组件**（`com.cloudfile.agent2`）逐步承载 Checkout/Commit 等新增业务。当前只有 Go 内部提交执行器、暂存模块，浏览器**不发布未接线的独占能力**。日后 Go 主控、.NET 仅作薄原生能力适配，无需新开发分支。
+- **Windows 过渡**：现有 .NET Agent1 1.x（Host `com.cloudfile.current_agent`）仍为主 UI/本地打开/用户密钥能力；Go Agent2 2.0.1 随 Windows 统一包安装，作为 **.NET Host 的内部子进程组件**逐步承载新增业务；不注册第二个 Host。唯一入口 `com.cloudfile.current_agent` 未来切换 Go 主控时不改名。当前只有 Go 内部提交执行器、暂存模块，浏览器**不发布未接线的独占能力**。日后 Go 主控、.NET 仅作薄原生能力适配，无需新开发分支。
 - **旧 Go 1.x**：`com.cloudfile.local_agent` 仅供兼容老会话。本版 Go2 的配置存放 `CloudFileAgent2` 用户目录，与旧 Go 1.x 的 `CloudFileLocal` 分离，避免工作副本和升级源互相覆盖。
-- **浏览器插件 1.0.1**：同一插件依次探测 Agent2 和兼容 Host，**以能力而不是版本号或平台猜测**决定路由：Agent2 已正式声明的能力优先；`open_uri` 在 Go2 尚未实现时仍交给 Windows Agent1；`open_session` 和本地工作区查询可回退原 Go 1.x。Agent2 的未知/失败请求**绝不再自动切换旧 Host 重试**，避免重复消费票据。未发布 Checkout/Commit 不会伪装成受支持的 Native 消息。
-- **发行**：Go2 和 Agent1 可并装，但只通过各自 Host ID 启动；Windows 现有 Agent1 的 HKCU/注册表和安装文件不被 Agent2 安装脚本覆盖。Mac/Windows Go2 的新增注册脚本无需 admin；真实受控 Windows 策略、公司签名、升级/回退与 Go+.NET 独占写回 E2E 仍需验证。**Go2 2.0.1 为 DEV 源码版本，不代表正式部署。**
+- **浏览器插件 1.0.1**：Windows 固定连接 `com.cloudfile.current_agent`；macOS/Linux 优先 Go2，仅在 Go2 不存在时兼容旧 Go1。已发出的操作失败后不跨 Host 重试，未接通的独占产品能力保持关闭。
+- **发行**：Windows 使用单 Host、四个 EXE 的统一离线 ZIP；macOS 使用 Go 原生双架构离线 ZIP。均按当前用户权限安装/注册，支持用户目录运行；签名发行和真实桌面端到端验收仍待完成。
 
 ## Windows 1.2.1 / macOS 2.0.1：Device Commit Broker 接线进展
 
 对外发布口径：原 Windows Agent1 `agent1` 分支维护 **1.0.0–1.1.x**；新 Windows `dev` 从 **1.2.1** 起（.NET UI/CNG + **内部 Go Core 2.0.1**）；macOS Go `dev` 从 **2.0.1** 起，未来 Windows Go 主控后再升 2.x 对齐。当前 Go 可执行文件均为 Go Core 2.0.1，不等于 Windows 整体对外版本为 2.x。
 
-`internal/editing/device_commit_proof.go` 复用 CloudFile 服务端 Canonical P-256 Proof；`device_bridge_windows.go` 调用 Windows Agent `.NET Bridge 1.2.1` 既有 CNG 密钥；`device_commit_broker.go` 经同源 HTTPS 发起 `commit-challenge`、签名并执行 `commit-authorize`，只接收持久 `prepared` 意图；`device_bound_transport.go` 通过统一 `Workflow` 把 Broker PREPARE 与未来 Native Publisher 分离，**缺 Native Publisher 则拒绝创建完整提交 transport**。已有测试覆盖 HTTP 提交、签名绑定、错误挑战、未知回包、禁止无权限上报。
+`internal/editing/device_commit_proof.go` 复用 CloudFile 服务端 Canonical P-256 Proof；`device_bridge_windows.go` 调用 Windows Agent `.NET Bridge 1.2.1` 既有 CNG 密钥；`device_commit_broker.go` 经同源 HTTPS 发起 `commit-challenge`、签名并执行 `commit-authorize`，只接收持久 `prepared` 意图；`device_bound_transport.go` 通过统一 `Workflow` 把 Broker PREPARE 与独立 Native Publisher 分离，**缺 Native Publisher 则拒绝创建完整提交 transport**。已有测试覆盖 HTTP 提交、签名绑定、错误挑战、未知回包、禁止无权限上报。
 
-**待开发**：设备证明被 Server Native Branch 认可后的原子 `commit-file-device` 发布与 `published` 持久回执，以及真实 Agent2/Windows 1.2.1 UI 与 OS 设备授权完整接线；macOS P-256 Keychain 真实保存/配对尚未做。当前绝不由 Go 自动 fallback 到普通 Seafile `update-api`，不启用自动上传和文件增量下载。Hub `CLOUDFILE_AGENT2_EXCLUSIVE_ENABLED=false`，暂不对用户宣传受控提交已可用。
+**当前边界**：设备上传客户端、Hub 上传授权/回执查询、Native Branch 原子发布和 macOS Keychain 签名适配已实现；本地手动上传 CLI 要求既有 Checkout Journal。桌面配对、Checkout/下载/Journal 初始化及 Commit/Checkin 完整交互仍待接线。功能默认关闭，不回退普通 Seafile `update-api`。
 
 ### Device Broker 测试补强（2026-10-11）
 
-`internal/editing/device_manual_recovery_test.go` 从真实 TLS mock challenge/authorize 一直覆盖到本地人工快照、Journal、模拟原生发布后丢回包和查询原 `intent_id` 恢复；不重复发布、不动用户后来修改的工作副本。Go `device_commit_proof_test.go` 使用 Hub/Python 独立得出的 SHA256 golden，和 Windows .NET 的 `DeviceProofTests` 校验完全相同的 Challenge bytes。三方签名格式一致，不代表服务器已提供设备 Native Publisher；上线前必须真实 E2E。
+`internal/editing/device_manual_recovery_test.go` 从真实 TLS mock challenge/authorize 一直覆盖到本地人工快照、Journal、模拟原生发布后丢回包和查询原 `intent_id` 恢复；不重复发布、不动用户后来修改的工作副本。Go `device_commit_proof_test.go` 使用 Hub/Python 独立得出的 SHA256 golden，和 Windows .NET 的 `DeviceProofTests` 校验完全相同的 Challenge bytes。三方签名格式一致；已补服务器设备发布实现，上线前仍须真实 E2E。
 
 ### Windows 1.2.1 一体化发行与安全路由（2026-10-11）
 
-`eap-cloudfile/agent/scripts/package-windows.sh` 把 .NET NativeHost、Windows GUI、CNG Bridge 与当前 `cloudfile-local-agent` Go 2.0.1 Core 一起编入 Windows x64 ZIP。Go 嵌入式能力查询使用固定 `--editing-capabilities`，仅报告人工提交/设备 Prepare 已有核心、最终 Native Device Publish **不可用**；Windows GUI 通过受控本地绝对路径真实启动 Go 并校验响应。未来补 Native Publisher 后复用现有 `ManualSubmitter`，不用另建 .NET 编辑状态机。
+`eap-cloudfile/agent/scripts/package-windows.sh` 将 .NET NativeHost、GUI、CNG Bridge 和 Go Core 2.0.1 编入同一 Windows x64 ZIP。GUI 通过固定包目录与受限 `--component` 协议查询 Go 能力；独占产品能力仍报告关闭，完整提交复用 Go `ManualSubmitter`，不重复实现 .NET 业务状态机。
 
-**Go 2.0.1 刚安装不自动接管已有 Windows 打开流程**：如果未明确配置可信服务器 `allowed_origins`，Native Host 状态只声明不执行用户会话的 `check_update`，不宣称 `open_session`/本地目录已经就绪；浏览器继续通过现有 Windows .NET 1.2.1 `com.cloudfile.current_agent` 打开受信 URI。配置可信服务器后才声明可接管的 Go 能力。新版 Windows Go 注册脚本使用 SHA256 命名只读版本文件，允许同一 2.0.1 开发版本重复部署并保留前一版，不覆盖正在运行的 Go 进程。
+Go 组件须显式配置 `allowed_origins` 才能处理服务器会话。Windows 浏览器始终使用唯一 .NET Host；组合包注册脚本统一管理版本切换和回退，不再由独立 Go 注册脚本接管。
+
+### Windows 内部组件与 macOS 区别
+
+Windows 1.2.1 用 `eap-cloudfile/agent/scripts/register-native-host.ps1` 安装、回退及卸载完整包；dev 的旧 `register-windows.ps1` 与 `register-agent2-windows.ps1` 已停用，不再写注册表。Go `--component` 仅处理单个有预算的 JSON 请求，不允许组件自行升级/注册、任意会话文件或未经接线的提交操作。原 Go CLI、macOS `register-agent2-macos.sh` 与配置目录保持原行为。`--editing-capabilities` 仍可用于独立诊断，Windows GUI 已改为受限 JSON 协议。
+
+内部 IPC 请求格式为 `{"ipc_version":1,"request":{"type":"capabilities"}}`，响应带同版本号、`ok` 与 `result` 或受限 `error_code`。GUI/Host 不再精确绑定 Go 补丁版本，兼容性由 Core 主版本及 IPC/Journal 版本决定；发布包另外锁定实际组件版本和哈希。
+
+Go 编辑基础设施新增 `SessionWorker`：以操作系统文件锁排斥同一会话的并发进程；Windows 还持有与安装器一致的活动句柄，阻止编辑中切换版本。Journal schema 1 保留最近一次经 Workflow 核验的 published 回执，读取兼容旧 schema 0，拒绝未知 schema；状态输出不包含 token 或快照路径。`editing_status` 从用户配置目录 `CloudFileAgent2/editing/<session_id>/journal.json` 查询指定 Intent，只能由内部调用方使用。服务端设备发布和本地上传 CLI 已实现，真实部署及 Commit/Checkin GUI 尚未验收，不把这些基础组件宣称为已交付的独占保存。
+
+macOS 独立安装、Keychain 配对、签名更新与当前能力边界见 [macOS 实现说明](docs/macos.md)。
+
+设备独占上传实现及尚未开放的产品契约见 [设备上传契约](docs/device-upload-contract.md)。两端仅分发离线完整 ZIP，安装/注册无需管理员权限。

@@ -17,7 +17,8 @@ type DeviceCommitPublisher interface {
 // DeviceBoundTransport is the ManualSubmitter/Workflow boundary that uses a
 // real device-signed Broker Prepare before publication. Fails closed unless
 // both real stages exist. There is no fallback to SessionHTTPTransport or
-// ordinary uploads, and this package does not provide a production publisher.
+// ordinary uploads. DeviceHTTPPublisher remains gated until the server native
+// byte route and current-device publication transaction are deployed.
 type DeviceBoundTransport struct {
 	broker    *DeviceCommitBroker
 	publisher DeviceCommitPublisher

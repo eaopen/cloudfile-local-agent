@@ -31,9 +31,11 @@ type Intent struct {
 	SnapshotCreatedAt string `json:"snapshot_created_at,omitempty"`
 }
 type State struct {
-	Lease   Lease   `json:"lease"`
-	Pending *Intent `json:"pending,omitempty"`
-	Closed  bool    `json:"closed"`
+	SchemaVersion int      `json:"schema_version,omitempty"`
+	LastReceipt   *Receipt `json:"last_receipt,omitempty"`
+	Lease         Lease    `json:"lease"`
+	Pending       *Intent  `json:"pending,omitempty"`
+	Closed        bool     `json:"closed"`
 }
 type Receipt struct {
 	IntentID       string `json:"intent_id"`
@@ -65,12 +67,16 @@ type Workflow struct {
 }
 
 func New(state State, remote Transport, journal Journal) (*Workflow, error) {
-	if remote == nil || journal == nil || state.Lease.GuardID == "" || (state.Lease.Token == "" && !state.Closed) {
+	if state.SchemaVersion < 0 || state.SchemaVersion > 1 || remote == nil || journal == nil || state.Lease.GuardID == "" || (state.Lease.Token == "" && !state.Closed) {
 		return nil, errors.New("authenticated checkout and durable journal required")
 	}
 	if state.Pending != nil {
 		pending := *state.Pending
 		state.Pending = &pending
+	}
+	if state.LastReceipt != nil {
+		receipt := *state.LastReceipt
+		state.LastReceipt = &receipt
 	}
 	return &Workflow{state: state, remote: remote, journal: journal}, nil
 }
@@ -82,9 +88,14 @@ func (w *Workflow) State() State {
 		p := *s.Pending
 		s.Pending = &p
 	}
+	if s.LastReceipt != nil {
+		receipt := *s.LastReceipt
+		s.LastReceipt = &receipt
+	}
 	return s
 }
 func (w *Workflow) save(s State) error {
+	s.SchemaVersion = 1
 	if err := w.journal.Save(s); err != nil {
 		return err
 	}
@@ -175,13 +186,15 @@ func (w *Workflow) accept(r Receipt) error {
 	p := w.state.Pending
 	fileID, err := hex.DecodeString(r.FileID)
 	if p == nil || r.State != "published" || r.IntentID != p.ID || r.Action != p.Action ||
-		(p.Action != "commit" && !r.CheckedIn) || (p.Action == "checkin-unchanged" && r.FileID != p.ExpectedFileID) || r.ContentDigest != p.Digest || r.ExpectedFileID != p.ExpectedFileID || err != nil || len(fileID) != 20 {
+		(r.CheckedIn != (p.Action != "commit")) || (p.Action == "checkin-unchanged" && r.FileID != p.ExpectedFileID) || r.ContentDigest != p.Digest || r.ExpectedFileID != p.ExpectedFileID || err != nil || len(fileID) != 20 {
 		return errors.New("unconfirmed publication receipt")
 	}
 	s := w.state
 	s.Lease.BaseFileID = r.FileID
 	s.Closed = p.Action == "checkin" || p.Action == "checkin-unchanged"
 	s.Pending = nil
+	receipt := r
+	s.LastReceipt = &receipt
 	if s.Closed {
 		s.Lease.Token = ""
 	}

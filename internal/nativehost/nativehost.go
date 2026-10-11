@@ -25,6 +25,8 @@ type Request struct {
 }
 
 type Response struct {
+	LastUpdateState  string   `json:"last_update_state,omitempty"`
+	LastUpdateKind   string   `json:"last_update_kind,omitempty"`
 	OK               bool     `json:"ok"`
 	Error            string   `json:"error,omitempty"`
 	Version          string   `json:"version,omitempty"`

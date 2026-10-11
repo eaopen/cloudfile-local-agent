@@ -167,6 +167,9 @@ func ApplyExtension(source string, m *ExtensionManifest, dir string) (string, er
 	}
 	zipPath := zipPathFile.Name()
 	zipPathFile.Close()
+	if err := os.Remove(zipPath); err != nil {
+		return "", err
+	}
 	defer os.Remove(zipPath)
 	if err := downloadBinary(target.String(), zipPath, m.SHA256); err != nil {
 		return "", err

@@ -5,13 +5,14 @@
 // a container rebuild). The source serves a single update.json plus the
 // versioned binaries referenced by it.
 //
-// Security note: update.json (containing the SHA-256) and the binaries are
-// served from the same static host, so the checksum only guards against
-// transmission corruption — not against an attacker who can rewrite both.
-// Tamper-resistance needs Authenticode signing, which is a follow-up item.
+// macOS uses signed.go with a locally pinned public key. The legacy Fetch
+// decoder remains for compatibility on other Unix platforms; Windows product
+// updates are controlled by the .NET signed bundle updater.
 package update
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -40,10 +42,12 @@ const maxBinaryBytes = 256 << 20
 // There is deliberately no min_version field: an update is only ever a prompt.
 // (The release JSONs may still carry the key; unknown keys are ignored.)
 type Manifest struct {
-	Version     string `json:"version"`
-	SHA256      string `json:"sha256"`
-	DownloadURL string `json:"download_url"`
-	Notes       string `json:"notes"`
+	expiresAt   int64
+	Version     string             `json:"version"`
+	SHA256      string             `json:"sha256"`
+	DownloadURL string             `json:"download_url"`
+	Notes       string             `json:"notes"`
+	Extension   *ExtensionManifest `json:"extension,omitempty"`
 }
 
 // Fetch retrieves and decodes update.json from the source URL. It keeps the
@@ -101,6 +105,9 @@ func parseVersion(value string) ([3]int, error) {
 		return out, fmt.Errorf("invalid version %q", value)
 	}
 	for i, part := range parts {
+		if part == "" || strings.Trim(part, "0123456789") != "" {
+			return out, fmt.Errorf("invalid version %q", value)
+		}
 		number, err := strconv.Atoi(part)
 		if err != nil || number < 0 {
 			return out, fmt.Errorf("invalid version %q", value)
@@ -122,11 +129,71 @@ func Apply(source string, manifest *Manifest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return applyWithPaths(source, manifest, binDir, manifestPath)
+	lock := filepath.Join(filepath.Dir(binDir), ".install-lock")
+	if err := os.Mkdir(lock, 0700); err != nil {
+		return "", fmt.Errorf("installation already active or unavailable")
+	}
+	defer os.Remove(lock)
+	if runtime.GOOS == "darwin" {
+		if manifest == nil || manifest.expiresAt <= time.Now().Unix() {
+			return "", fmt.Errorf("current signed macOS release required")
+		}
+		previous, err := os.ReadFile(manifestPath)
+		if err != nil {
+			return "", err
+		}
+		var current struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(previous, &current) != nil || current.Name != "com.cloudfile.agent2" || current.Type != "stdio" || filepath.Dir(current.Path) != binDir {
+			return "", fmt.Errorf("owned macOS registration required")
+		}
+		info, err := os.Lstat(current.Path)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("registered executable unavailable")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		active, err := candidateOutput(ctx, current.Path, nil, "--version")
+		cancel()
+		if err != nil {
+			return "", err
+		}
+		comparison, err := Compare(manifest.Version, strings.TrimSpace(string(active)))
+		if err != nil {
+			return "", err
+		}
+		if comparison <= 0 {
+			return current.Path, nil
+		}
+		if err := atomicManifest(filepath.Join(filepath.Dir(binDir), "previous-native-host.json"), previous); err != nil {
+			return "", err
+		}
+	}
+	return applyChecked(source, manifest, binDir, manifestPath, true)
 }
 
 // applyWithPaths is Apply with injectable paths, used by tests.
 func applyWithPaths(source string, manifest *Manifest, binDir, manifestPath string) (string, error) {
+	return applyChecked(source, manifest, binDir, manifestPath, false)
+}
+
+func applyChecked(source string, manifest *Manifest, binDir, manifestPath string, check bool) (string, error) {
+	if manifest == nil {
+		return "", fmt.Errorf("update manifest required")
+	}
+	if _, err := parseVersion(manifest.Version); err != nil {
+		return "", err
+	}
+	// Validate the registration before downloading. Follow the installer's
+	// symlink once, then atomically replace the actual browser manifest.
+	resolved, err := filepath.EvalSymlinks(manifestPath)
+	if err != nil {
+		return "", err
+	}
+	manifestPath = resolved
+
 	if err := os.MkdirAll(binDir, 0700); err != nil {
 		return "", err
 	}
@@ -138,11 +205,16 @@ func applyWithPaths(source string, manifest *Manifest, binDir, manifestPath stri
 	if err := downloadBinary(downloadURL, target, manifest.SHA256); err != nil {
 		return "", err
 	}
+	if check {
+		if err := CheckExecutable(target, manifest.Version); err != nil {
+			return "", err
+		}
+	}
 	if err := swapManifest(manifestPath, target); err != nil {
 		return "", err
 	}
-	// Pruning failure is non-fatal: stale versions are retried on the next run.
-	_ = pruneOld(binDir)
+	// An editor may still be using an older executable. Retain old versions;
+	// removal belongs to an explicit maintenance action, not activation.
 	return target, nil
 }
 
@@ -183,7 +255,7 @@ func resolveDownloadURL(source, downloadURL string) (string, error) {
 }
 
 func downloadBinary(rawURL, target, wantSHA256 string) error {
-	response, err := (&http.Client{Timeout: 5 * time.Minute}).Get(rawURL)
+	response, err := (&http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Get(rawURL)
 	if err != nil {
 		return err
 	}
@@ -199,7 +271,11 @@ func downloadBinary(rawURL, target, wantSHA256 string) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	written, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(response.Body, maxBinaryBytes+1))
+	syncErr := tmp.Sync()
 	closeErr := tmp.Close()
+	if syncErr != nil {
+		return syncErr
+	}
 	if err != nil {
 		return err
 	}
@@ -213,7 +289,23 @@ func downloadBinary(rawURL, target, wantSHA256 string) error {
 	if !strings.EqualFold(got, wantSHA256) {
 		return fmt.Errorf("update binary checksum mismatch")
 	}
-	return os.Rename(tmpName, target)
+	if err := os.Chmod(tmpName, 0700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("regular target required")
+	}
+	if existing, err := os.ReadFile(target); err == nil {
+		digest := sha256.Sum256(existing)
+		if !strings.EqualFold(hex.EncodeToString(digest[:]), wantSHA256) {
+			return fmt.Errorf("installed version differs; refusing overwrite")
+		}
+		return os.Chmod(target, 0700)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	// Hard-link installation fails if a concurrent installer claimed this name.
+	return os.Link(tmpName, target)
 }
 
 // swapManifest rewrites only the "path" field of the native-host manifest,
@@ -234,7 +326,71 @@ func swapManifest(manifestPath, newBinary string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(manifestPath, out, 0600)
+	return atomicManifest(manifestPath, out)
+}
+
+func atomicManifest(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".cloudfile-manifest-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// CheckExecutable runs the candidate before changing the browser entry point.
+func CheckExecutable(path, version string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := candidateOutput(ctx, path, nil, "--version")
+	if err != nil || strings.TrimSpace(string(output)) != version {
+		return fmt.Errorf("candidate executable health check failed")
+	}
+	if runtime.GOOS == "darwin" {
+		output, err = candidateOutput(ctx, path, []byte(`{"ipc_version":1,"request":{"type":"capabilities"}}`), "--component")
+		var response struct {
+			OK     bool `json:"ok"`
+			Result struct {
+				Platform string `json:"platform"`
+				IPC      int    `json:"ipc_version"`
+				Journal  int    `json:"journal_version"`
+			} `json:"result"`
+		}
+		if err != nil || json.Unmarshal(output, &response) != nil || !response.OK || response.Result.Platform != "darwin" || response.Result.IPC != 1 || response.Result.Journal != 1 {
+			return fmt.Errorf("candidate protocol health check failed")
+		}
+	}
+	return nil
+}
+
+type boundedOutput struct{ bytes.Buffer }
+
+func (b *boundedOutput) Write(data []byte) (int, error) {
+	if b.Len()+len(data) > 16384 {
+		return 0, fmt.Errorf("candidate output exceeds budget")
+	}
+	return b.Buffer.Write(data)
+}
+func candidateOutput(ctx context.Context, path string, input []byte, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, path, args...)
+	command.Stdin = bytes.NewReader(input)
+	var output boundedOutput
+	command.Stdout = &output
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("candidate execution failed")
+	}
+	return output.Bytes(), nil
 }
 
 // pruneOld keeps the two newest versioned binaries (current + one rollback

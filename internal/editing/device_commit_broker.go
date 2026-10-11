@@ -14,7 +14,7 @@ import (
 
 // CommitChallengeSigner signs only the actual server-issued current device
 // commit challenge. On Windows it delegates to the already confirmed CNG key
-// via the Agent1 1.2.1 .NET Bridge. macOS uses a protected Go P-256 key.
+// via the Agent1 1.2.1 .NET Bridge. macOS opens the confirmed P-256 key through Security.framework.
 type CommitChallengeSigner func(context.Context, DeviceCommitChallenge) (string, error)
 
 // DeviceCommitBroker prepares a real server CommitIntent after verifying a
@@ -79,20 +79,9 @@ func (b *DeviceCommitBroker) request(ctx context.Context, operation string, requ
 // PrepareIntent performs a two-step, single-use challenge bound to the exact
 // saved snapshot and guard. It never uploads a byte, and returns no bearer.
 func (b *DeviceCommitBroker) PrepareIntent(ctx context.Context, lease Lease, intent Intent) error {
-	if !proofUUID.MatchString(intent.ID) || !proofUUID.MatchString(lease.GuardID) ||
-		!proofSHA.MatchString(intent.Digest) || !objectID.MatchString(lease.BaseFileID) ||
-		lease.Generation == "" || lease.CredentialEpoch == "" ||
-		len(lease.Token) != 64 || intent.ExpectedFileID != lease.BaseFileID ||
-		intent.SnapshotSize < 0 || intent.SnapshotSize > maxSnapshotBytes ||
-		(intent.Action != "commit" && intent.Action != "checkin") {
-		return errors.New("guarded immutable manual commit required")
-	}
-	req := map[string]any{
-		"session_id": b.sessionID, "device_id": b.deviceID,
-		"intent_id": intent.ID, "guard_id": lease.GuardID,
-		"generation": lease.Generation, "credential_epoch": lease.CredentialEpoch,
-		"token": lease.Token, "base_file_id": intent.ExpectedFileID,
-		"content_digest": intent.Digest, "snapshot_size": intent.SnapshotSize, "action": intent.Action,
+	req, err := b.commitRequest(lease, intent)
+	if err != nil {
+		return err
 	}
 	var challenge struct {
 		Challenge DeviceCommitChallenge `json:"challenge"`
@@ -123,4 +112,23 @@ func (b *DeviceCommitBroker) PrepareIntent(ctx context.Context, lease Lease, int
 		return errors.New("device CommitIntent not confirmed")
 	}
 	return nil
+}
+
+func (b *DeviceCommitBroker) commitRequest(lease Lease, intent Intent) (map[string]any, error) {
+	if !proofUUID.MatchString(intent.ID) || !proofUUID.MatchString(lease.GuardID) ||
+		!proofSHA.MatchString(intent.Digest) || !objectID.MatchString(lease.BaseFileID) ||
+		lease.Generation == "" || lease.CredentialEpoch == "" ||
+		!proofSHA.MatchString(lease.Token) || intent.ExpectedFileID != lease.BaseFileID ||
+		intent.SnapshotSize < 0 || intent.SnapshotSize > maxSnapshotBytes ||
+		(intent.Action != "commit" && intent.Action != "checkin") {
+		return nil, errors.New("guarded immutable manual commit required")
+	}
+	req := map[string]any{
+		"session_id": b.sessionID, "device_id": b.deviceID,
+		"intent_id": intent.ID, "guard_id": lease.GuardID,
+		"generation": lease.Generation, "credential_epoch": lease.CredentialEpoch,
+		"token": lease.Token, "base_file_id": intent.ExpectedFileID,
+		"content_digest": intent.Digest, "snapshot_size": intent.SnapshotSize, "action": intent.Action,
+	}
+	return req, nil
 }

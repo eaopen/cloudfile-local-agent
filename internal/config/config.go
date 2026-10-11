@@ -10,10 +10,11 @@ import (
 )
 
 type Config struct {
-	AllowedOrigins []string   `json:"allowed_origins"`
-	WorkspaceRoot  string     `json:"workspace_root"`
-	UpdateSource   string     `json:"update_source,omitempty"`
-	OpenRules      []OpenRule `json:"open_rules"`
+	AllowedOrigins  []string   `json:"allowed_origins"`
+	WorkspaceRoot   string     `json:"workspace_root"`
+	UpdateSource    string     `json:"update_source,omitempty"`
+	UpdatePublicKey string     `json:"update_public_key,omitempty"`
+	OpenRules       []OpenRule `json:"open_rules"`
 }
 
 // OpenRule selects a locally configured program for one file extension and
@@ -71,7 +72,23 @@ func Save(config Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }
 
 func (c Config) Validate() error {
