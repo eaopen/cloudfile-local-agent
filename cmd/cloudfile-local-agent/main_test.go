@@ -19,7 +19,28 @@ func TestAgent2StatusDeclaresOnlyImplementedCapabilities(t *testing.T) {
 		}
 		delete(want, cap)
 	}
-	if len(want) != 0 {
-		t.Fatalf("missing basic capabilities: %v", want)
+	if !containsCapabilities(got.Capabilities, "check_update") {
+		t.Fatal("update capability missing")
+	}
+	_ = want // not all capabilities are advertised until Go is paired
+}
+
+func containsCapabilities(capabilities []string, name string) bool {
+	for _, capability := range capabilities {
+		if capability == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAgent2DoesNotStealUnconfiguredWindowsSessions(t *testing.T) {
+	unpaired := advertisedCapabilities(nil)
+	if containsCapabilities(unpaired, "open_session") || containsCapabilities(unpaired, "open_workspace") {
+		t.Fatalf("unconfigured Go agent took over old Windows operations: %v", unpaired)
+	}
+	paired := advertisedCapabilities([]string{"https://cloudfile.example"})
+	if !containsCapabilities(paired, "open_session") || !containsCapabilities(paired, "query_local_file") {
+		t.Fatalf("paired Go agent omitted available operations: %v", paired)
 	}
 }

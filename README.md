@@ -170,3 +170,9 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 ### Device Broker 测试补强（2026-10-11）
 
 `internal/editing/device_manual_recovery_test.go` 从真实 TLS mock challenge/authorize 一直覆盖到本地人工快照、Journal、模拟原生发布后丢回包和查询原 `intent_id` 恢复；不重复发布、不动用户后来修改的工作副本。Go `device_commit_proof_test.go` 使用 Hub/Python 独立得出的 SHA256 golden，和 Windows .NET 的 `DeviceProofTests` 校验完全相同的 Challenge bytes。三方签名格式一致，不代表服务器已提供设备 Native Publisher；上线前必须真实 E2E。
+
+### Windows 1.2.1 一体化发行与安全路由（2026-10-11）
+
+`eap-cloudfile/agent/scripts/package-windows.sh` 把 .NET NativeHost、Windows GUI、CNG Bridge 与当前 `cloudfile-local-agent` Go 2.0.1 Core 一起编入 Windows x64 ZIP。Go 嵌入式能力查询使用固定 `--editing-capabilities`，仅报告人工提交/设备 Prepare 已有核心、最终 Native Device Publish **不可用**；Windows GUI 通过受控本地绝对路径真实启动 Go 并校验响应。未来补 Native Publisher 后复用现有 `ManualSubmitter`，不用另建 .NET 编辑状态机。
+
+**Go 2.0.1 刚安装不自动接管已有 Windows 打开流程**：如果未明确配置可信服务器 `allowed_origins`，Native Host 状态只声明不执行用户会话的 `check_update`，不宣称 `open_session`/本地目录已经就绪；浏览器继续通过现有 Windows .NET 1.2.1 `com.cloudfile.current_agent` 打开受信 URI。配置可信服务器后才声明可接管的 Go 能力。新版 Windows Go 注册脚本使用 SHA256 命名只读版本文件，允许同一 2.0.1 开发版本重复部署并保留前一版，不覆盖正在运行的 Go 进程。

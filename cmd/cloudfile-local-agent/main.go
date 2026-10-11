@@ -28,6 +28,7 @@ const version = "2.0.1"
 func main() {
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
 	showVersion := flag.Bool("version", false, "print Agent2 version")
+	editingCapabilities := flag.Bool("editing-capabilities", false, "report supported local editing stages, without credentials")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
@@ -41,6 +42,18 @@ func main() {
 
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if *editingCapabilities {
+		data, err := json.Marshal(map[string]any{
+			"family": "agent2", "core_version": version, "platform": runtime.GOOS,
+			"manual_submit_core": true, "device_signed_prepare": true,
+			"native_device_publish": false, "automatic_upload": false,
+		})
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
 		return
 	}
 	if *allowOrigin != "" {
@@ -107,6 +120,18 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Upgrade with --check-update / --update / --update-extension.")
 }
 
+// A new 1.2.1 Windows bundle installs Go alongside the working .NET Agent.
+// Do not advertise network session actions before an explicit trusted origin
+// exists. Extension dispatches to Go only for advertised operations.
+func advertisedCapabilities(trustedOrigins []string) []string {
+	operations := []string{"check_update"}
+	if len(trustedOrigins) != 0 {
+		operations = append(operations, "open_session", "open_session_file",
+			"query_local_file", "query_local_folder", "open_workspace")
+	}
+	return operations
+}
+
 func handleNativeMessage(request nativehost.Request) nativehost.Response {
 	switch request.Type {
 	case "status":
@@ -115,7 +140,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			Version:      version,
 			AgentFamily:  "agent2",
 			Platform:     runtime.GOOS,
-			Capabilities: []string{"open_session", "open_session_file", "query_local_file", "query_local_folder", "open_workspace", "check_update"},
+			Capabilities: advertisedCapabilities(nil),
 			Applications: appfinder.Names(),
 		}
 		// 回传自身可执行文件路径，供扩展 popup 拼出「可直接复制运行」的升级命令。
@@ -123,9 +148,15 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			response.ExecutablePath = executable
 		}
 		if agentConfig, err := config.Load(); err == nil {
-			if root, err := workspace.Resolve(agentConfig); err == nil {
-				response.WorkspaceRoot = root
-				response.CanOpenWorkspace = true
+			if len(agentConfig.AllowedOrigins) > 0 {
+				// A newly installed parallel Windows Go component MUST NOT take
+				// over an existing session until its trusted CloudFile origin is
+				// configured. Chrome routes by capabilities, not installation.
+				response.Capabilities = advertisedCapabilities(agentConfig.AllowedOrigins)
+				if root, err := workspace.Resolve(agentConfig); err == nil {
+					response.WorkspaceRoot = root
+					response.CanOpenWorkspace = true
+				}
 			}
 			describeAgentUpdate(agentConfig, &response)
 			describeExtensionUpdate(agentConfig, &response)

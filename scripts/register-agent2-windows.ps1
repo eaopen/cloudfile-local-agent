@@ -30,12 +30,15 @@ if ($LASTEXITCODE -ne 0 -or $version -ne '2.0.1') {
 }
 $binDir = Join-Path $root 'bin'
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-$target = Join-Path $binDir 'cloudfile-agent2-2.0.1.exe'
+# A 2.0.1 development build may change without bumping the public Windows
+# 1.2.1 version. Keep hash-addressed binaries immutable so live processes are
+# never overwritten and the previous registered version can be restored.
+$sourceHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+$target = Join-Path $binDir ('cloudfile-agent2-2.0.1-' + $sourceHash.Substring(0, 12) + '.exe')
 if ($binary -ne $target) {
   if (Test-Path -LiteralPath $target) {
-    $sourceHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
-    $destHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-    if ($sourceHash -ne $destHash) { throw 'An existing Agent2 2.0.1 binary differs; refusing overwrite' }
+    $destHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($sourceHash -ne $destHash) { throw 'An existing immutable Agent2 binary differs; refusing overwrite' }
   } else {
     Copy-Item -LiteralPath $binary -Destination $target -ErrorAction Stop
   }
