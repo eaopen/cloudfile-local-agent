@@ -127,3 +127,15 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 `SessionHTTPTransport` 已适配原生 OIDC 的 Checkout、人工上传、状态查询、受控下载、心跳、Resume 和 Abandon；它要求受信已认证的 host client。设备授权 broker 尚未接线，旧 v2 runner 不注册这些能力，Claim 仍拒绝 writeback，不传递浏览器 Cookie。
 
 本地 HTTPS 测试覆盖 multipart、响应断连后的历史查询、不重复提交、无内容 Checkin 和工作副本保留；测试服务的身份/发布为夹具。Seafile 原生服务闭环已另行验收，不能代替浏览器 OIDC → Agent 产品联调。Go 测试、go vet、race 与 Windows amd64 交叉编译通过；Office/DWG/NX 实机保存行为未验收。自动上传、多文件工程及未验收的软件路径均不开放。
+
+## v0.7 块级增量上传底座（2026-10-11 开发中，未接线/未发布）
+
+`internal/blockdelta/` 新增 **纯 Go Seafile 兼容 CDC**（6–10 MiB、平均 8 MiB，48 字节 Rabin 窗口）：生成有序块 ID、块大小/偏移、Seafile v1 file ID 和 SHA-256；只读取已冻结单文件快照。与独立 Seafile C 参考数据的指纹、切块边界、块 SHA-1、元数据 File ID 和内容 SHA-256 已逐项对齐。
+
+`StageSnapshotOnly` 根据可信服务端返回的缺失块列表，仅上传缺失 raw-blocks；拒绝未知/重复 ID、源内容变化及上传失败。HTTPS adapter 要求已配对同源的短时 `upload-raw-blks-api` URL、TLS 验证和严格响应，不允许重定向；在测试 TLS 服务中验证了分块发送。**本模块只暂存原始块，绝不会发布云端版本、取消独占或绕过 Server Barrier。**
+
+**尚未完成**：CloudFile 设备 Broker 对接真实 scoped 缺失块授权、原生受控 `CommitBlocks`（块完整性、guard、intent、base version 与同一原生事务回执）、大文件 DEV 端到端实测以及 Windows 真实绿色包测试。本模块未由旧 CLI/Native Host/普通保存行为触发，不能宣称增量上传现已面向用户可用。
+
+**明确不包含文件增量下载**：Agent/Agent2 本地查看与本地打开继续受控完整下载，不做下载块缓存、版本块重建或下载差异比较。大文件增量上传也只能由用户明确选择提交，不能后台静默提交。
+
+独立检查：`go test -count=1 ./internal/blockdelta`；全部 Go 用例：`go test ./...`。
