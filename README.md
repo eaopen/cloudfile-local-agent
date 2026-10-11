@@ -139,3 +139,13 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 **明确不包含文件增量下载**：Agent/Agent2 本地查看与本地打开继续受控完整下载，不做下载块缓存、版本块重建或下载差异比较。大文件增量上传也只能由用户明确选择提交，不能后台静默提交。
 
 独立检查：`go test -count=1 ./internal/blockdelta`；全部 Go 用例：`go test ./...`。
+
+## v0.7 本地独占文件人工提交（2026-10-11 开发中）
+
+`internal/editing/manual.go` 提供 `ManualSubmitter`：只接受当前用户**明确确认**的一次独占编辑提交；读取已经领取的 Checkout/guard 状态，创建不可变快照（当前完整文件模式上限 128 MiB），沿用已有 `Workflow.CommitCaptured` 把 `intent_id` 先持久化，再走 `Transport.Publish`。普通 Commit 继续保留占用；明确选择完成时可提交并 Checkin。结果未知时保留唯一工作副本/快照及原 intent，必须明确选择恢复；不使用普通 Seafile `update-api` 降级。
+
+**为未来自动上传预留**：业务提交执行层与触发来源分离，未来可以在重新确认授权模型后，由可选保存检测触发同一 Workflow；本阶段只允许 `SubmitManual` 且 `UserConfirmed=true`。不能把“本地检测到保存”当作当前许可；不自动提交或自动 Checkin。
+
+**未完成的产品接线**：CloudFile Hub `editing/v1/commit-file` 仍要求浏览器 OIDC/CSRF 会话，设备签名 Broker 只支持当前本地领取/读取操作，尚不提供受信写入票据。Windows .NET Native Host / Go CLI 尚未把人工提交按钮及已验证设备授权绑定到 `ManualSubmitter`。**不要把浏览器 Cookie 交给 Agent，不要把此库测试声称为真实远端产品上传成功。** 独占编辑仍默认关闭。原生受控块清单 `CommitBlocks` 也尚未接线。
+
+修复 1.0.1 最新 `dev` 源码缺失的 `internal/home`、`internal/workspace`、`internal/launch`、更新模块 API 及 `config` 平台根目录适配，使整个 Go CLI 恢复编译；这些修复需继续在受控 Windows 真实用户环境验证安装/扩展更新和版本切换。
