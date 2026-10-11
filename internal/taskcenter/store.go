@@ -241,7 +241,7 @@ func (s *Store) List() ([]Summary, error) {
 	}
 	out := make([]Summary, 0, len(entries))
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
+		if e.Name() == "preferences.json" || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
