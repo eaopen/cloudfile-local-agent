@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/eaopen/cloudfile-local-agent/internal/device"
 	"math/big"
 	"net/url"
 	"regexp"
@@ -51,7 +52,7 @@ func (c DeviceCommitChallenge) Validate(instance, deviceID, sessionID string, no
 
 func (c DeviceCommitChallenge) validateFor(instance, deviceID, sessionID, expected string, now time.Time) error {
 	parsed, err := url.Parse(c.Instance)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+	if err != nil || (parsed.Scheme != "https" && !device.AllowHTTPOrigin(c.Instance)) || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
 		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") || strings.HasSuffix(c.Instance, "/") ||
 		strings.ToLower(parsed.Host) != parsed.Host || strings.ContainsAny(c.Instance, "%\\") ||
 		c.Instance != instance || c.DeviceID != deviceID || c.SessionID != sessionID || c.Operation != expected ||

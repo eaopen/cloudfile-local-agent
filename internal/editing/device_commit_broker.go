@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/eaopen/cloudfile-local-agent/internal/device"
 	"io"
 	"net/http"
 	"net/url"
@@ -31,11 +32,11 @@ type DeviceCommitBroker struct {
 
 func NewDeviceCommitBroker(source *http.Client, instance, sessionID, deviceID string, signer CommitChallengeSigner) (*DeviceCommitBroker, error) {
 	parsed, err := url.Parse(instance)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" ||
+	if err != nil || (parsed.Scheme != "https" && !device.AllowHTTPOrigin(instance)) || parsed.Host == "" || parsed.Path != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil ||
 		strings.ToLower(parsed.Host) != parsed.Host || source == nil || signer == nil ||
 		!proofUUID.MatchString(sessionID) || !proofUUID.MatchString(deviceID) {
-		return nil, errors.New("paired HTTPS device and signer required")
+		return nil, errors.New("paired canonical HTTP/HTTPS instance and signer required")
 	}
 	copyClient := *source
 	copyClient.Jar = nil

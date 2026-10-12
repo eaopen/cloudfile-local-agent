@@ -25,9 +25,30 @@ func TestChallengeBindings(t *testing.T) {
 	if c.Validate(c.Instance, id, id, "pair", now.Add(time.Minute)) == nil {
 		t.Fatal("expired challenge accepted")
 	}
-	for _, origin := range []string{"http://cloud.example", "https://cloud.example/", "https://user@cloud.example", "https://cloud.example?", "https://Cloud.example", "https://cloud.example:99999", "https://cloud.example:"} {
+	for _, origin := range []string{"https://cloud.example/", "https://user@cloud.example", "https://cloud.example?", "https://Cloud.example", "https://cloud.example:99999", "https://cloud.example:"} {
 		if Origin(origin) == nil {
 			t.Fatalf("accepted %s", origin)
+		}
+	}
+}
+
+func TestCanonicalHTTPIsNativeAndExact(t *testing.T) {
+	for _, origin := range []string{
+		"http://cloud.example", "http://cloud.example:8092",
+		"http://10.12.1.157:8092", "http://localhost:8092",
+	} {
+		if err := Origin(origin); err != nil {
+			t.Fatalf("standard HTTP %s rejected: %v", origin, err)
+		}
+	}
+	for _, origin := range []string{
+		"http://cloud.example/path", "http://user@cloud.example",
+		"http://CLOUD.EXAMPLE", "http://cloud.example:99999",
+		"http://cloud.example/", "ftp://cloud.example",
+		"http://cloud.example?foo=bar",
+	} {
+		if err := Origin(origin); err == nil {
+			t.Fatalf("unsafe HTTP origin accepted: %s", origin)
 		}
 	}
 }

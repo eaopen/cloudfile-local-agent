@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"github.com/eaopen/cloudfile-local-agent/internal/device"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -39,11 +40,11 @@ func NewHTTPSRawBlockStager(rawURL, trustedOrigin string, source *http.Client, m
 	u, err := url.Parse(rawURL)
 	origin, originErr := url.Parse(trustedOrigin)
 	if err != nil || originErr != nil || source == nil || missing == nil ||
-		u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
-		origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" ||
-		origin.RawQuery != "" || origin.Fragment != "" || !strings.EqualFold(u.Host, origin.Host) ||
+		(u.Scheme != "https" && !device.AllowHTTPOrigin(u.Scheme+"://"+u.Host)) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		(origin.Scheme != "https" && !device.AllowHTTPOrigin(origin.Scheme+"://"+origin.Host)) || origin.Host == "" || origin.User != nil || origin.Path != "" ||
+		origin.RawQuery != "" || origin.Fragment != "" || u.Scheme != origin.Scheme || !strings.EqualFold(u.Host, origin.Host) ||
 		!rawUploadPath.MatchString(u.EscapedPath()) || strings.Contains(u.EscapedPath(), "%") {
-		return nil, errors.New("paired same-origin, scoped raw-block HTTPS URL required")
+		return nil, errors.New("paired same-origin, scoped same-origin HTTP/HTTPS raw-block URL required")
 	}
 	copyClient := *source
 	copyClient.Jar = nil

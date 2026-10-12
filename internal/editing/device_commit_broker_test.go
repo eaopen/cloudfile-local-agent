@@ -93,7 +93,7 @@ func TestDeviceBrokerRejectsUnsafeOriginAndInvalidIntent(t *testing.T) {
 	client := &http.Client{}
 	signer := func(context.Context, DeviceCommitChallenge) (string, error) { return "", nil }
 	sid := "11111111-1111-4111-8111-111111111111"
-	for _, bad := range []string{"http://domain.test", "https://domain.test/path", "https://user@domain.test"} {
+	for _, bad := range []string{"http://domain.test/path", "https://domain.test/path", "https://user@domain.test", "ftp://domain.test", "http://other@domain.test"} {
 		if _, err := NewDeviceCommitBroker(client, bad, sid, sid, signer); err == nil {
 			t.Errorf("accepted origin %s", bad)
 		}

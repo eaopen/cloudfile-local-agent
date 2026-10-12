@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eaopen/cloudfile-local-agent/internal/device"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -56,10 +57,10 @@ type SessionHTTPTransport struct {
 
 func NewSessionHTTPTransport(client *http.Client, endpoint string, ref Reference, version NativeVersionReader) (*SessionHTTPTransport, error) {
 	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+	if err != nil || (u.Scheme != "https" && !device.AllowHTTPOrigin(u.Scheme+"://"+u.Host)) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		!canonicalUUID.MatchString(ref.RepoID) || ref.Kind != "file" || !strings.HasPrefix(ref.Path, "/") || strings.Contains(ref.Path, "\x00") ||
 		strings.Contains(ref.Path, "//") || strings.Contains(ref.Path, "/../") || strings.HasSuffix(ref.Path, "/..") || strings.Contains(ref.Path, "/./") || len(ref.Path) > 4096 || client == nil || version == nil {
-		return nil, errors.New("trusted HTTPS session, single-file target and native version reader required")
+		return nil, errors.New("trusted HTTP/HTTPS session, single-file target and native version reader required")
 	}
 	copyClient := *client
 	if copyClient.Timeout <= 0 || copyClient.Timeout > 180*time.Second {

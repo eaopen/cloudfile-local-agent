@@ -53,7 +53,7 @@ func sameHTTPSOrigin(source, download string) bool {
 		return false
 	}
 	b, err := url.Parse(download)
-	return err == nil && a.Scheme == "https" && b.Scheme == "https" && a.Host != "" &&
+	return err == nil && (a.Scheme == "https" || a.Scheme == "http") && b.Scheme == a.Scheme && a.Host != "" &&
 		strings.EqualFold(a.Host, b.Host) && a.User == nil && b.User == nil && a.Fragment == "" && b.Fragment == ""
 }
 
@@ -112,7 +112,7 @@ func FetchSigned(source, keyPEM string, timeout time.Duration) (*Manifest, error
 		return nil, err
 	}
 	if !sameHTTPSOrigin(source, source) {
-		return nil, errors.New("HTTPS release source required")
+		return nil, errors.New("canonical HTTP/HTTPS signed release source required")
 	}
 	cacheKey := "signed:" + source + "\n" + keyPEM
 	if timeout <= 2*time.Second {

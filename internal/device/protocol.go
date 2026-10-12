@@ -15,13 +15,31 @@ import (
 var ID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var hash = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// Canonical same-origin HTTP/HTTPS is the standard private CloudFile
+// transport. This does not authorize the user/device; paired P-256 and
+// Native version/ACL/Checkout checks are independent and mandatory.
+
+func AllowHTTPOrigin(value string) bool {
+	if len(value) < 8 || len(value) > 255 || !strings.HasPrefix(value, "http://") ||
+		strings.ContainsAny(value, "%\\?#@*") || strings.HasSuffix(value, "/") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		strings.ToLower(parsed.Host) != parsed.Host || parsed.Hostname() == "" {
+		return false
+	}
+	return true
+}
+
 func Origin(value string) error {
 	u, err := url.Parse(value)
-	if err != nil || len(value) > 255 || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ToLower(u.Host) != u.Host || strings.ContainsAny(value, "%\\?#@") {
-		return errors.New("canonical HTTPS origin required")
+	if err != nil || len(value) > 255 || (u.Scheme != "https" && !AllowHTTPOrigin(value)) || u.Host == "" || u.Path != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ToLower(u.Host) != u.Host || strings.ContainsAny(value, "%\\?#@") {
+		return errors.New("canonical HTTP or HTTPS origin required")
 	}
 	if u.Hostname() == "" || strings.HasSuffix(u.Host, ":") {
-		return errors.New("valid HTTPS host required")
+		return errors.New("valid allowed origin host required")
 	}
 	if raw := u.Port(); raw != "" {
 		port, err := strconv.Atoi(raw)

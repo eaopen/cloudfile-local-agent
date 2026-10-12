@@ -19,7 +19,7 @@ func TestPairedOpenURIIsCanonicalAndCannotNominateOtherData(t *testing.T) {
 		t.Fatalf("valid URI rejected %v", err)
 	}
 	for _, attack := range []string{
-		base + "&file=/etc/passwd", strings.Replace(base, "https%3A", "http%3A", 1),
+		base + "&file=/etc/passwd", strings.Replace(base, "https%3A", "ftp%3A", 1),
 		strings.Replace(base, "ticket=", "ticket=changed", 1),
 		strings.Replace(base, "session=", "session=other", 1),
 		strings.Replace(base, "cloudfile-open://v1", "https://v1", 1),
@@ -29,6 +29,11 @@ func TestPairedOpenURIIsCanonicalAndCannotNominateOtherData(t *testing.T) {
 		if _, err := parsePairedOpenURI(attack); err == nil {
 			t.Fatalf("untrusted URI accepted")
 		}
+	}
+	httpURI := strings.Replace(base, "https%3A", "http%3A", 1)
+	httpParsed, err := parsePairedOpenURI(httpURI)
+	if err != nil || httpParsed.Instance != "http://cloudfile.example" {
+		t.Fatalf("canonical private HTTP open URI rejected: %v", err)
 	}
 	if device.Origin(parsed.Instance) != nil {
 		t.Fatal("confirmed HTTPS origin rejected")
