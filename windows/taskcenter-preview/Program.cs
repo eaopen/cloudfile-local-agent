@@ -178,7 +178,7 @@ internal sealed class CenterForm : Form
     private readonly Dictionary<string,string> leaseWarnings = new();
     private int activeExclusive;
     private int uncertainExclusive;
-    private readonly NotifyIcon tray;
+    private readonly NotifyIcon? tray;
     private readonly FloatHandle floating;
     private readonly ListView list;
     private readonly Label status;
@@ -196,7 +196,9 @@ internal sealed class CenterForm : Form
         ClientSize = new Size(660, 380);
         MinimumSize = new Size(490, 300);
         StartPosition = FormStartPosition.CenterScreen;
-        ShowInTaskbar = false;
+        // Always keep a regular taskbar-capable window for locked-down users.
+        // Tray/Explorer integration must never be required for core functions.
+        ShowInTaskbar = true;
         list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true };
         list.Columns.Add("文件", 170);
         list.Columns.Add("本地状态", 185);
@@ -214,15 +216,33 @@ internal sealed class CenterForm : Form
         menu.Items.Add("刷新任务", null, (_, _) => _ = RefreshAsync());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出预览", null, (_, _) => ExitPreview());
-        tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true,
-            Text = "CloudFile 本地任务（只读预览）", ContextMenuStrip = menu };
-        tray.DoubleClick += (_, _) => ShowCenter();
+        NotifyIcon? optionalTray = null;
+        try {
+            optionalTray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true,
+                Text = "CloudFile 本地任务（可选系统托盘）", ContextMenuStrip = menu };
+            optionalTray.DoubleClick += (_, _) => ShowCenter();
+        } catch (Exception e) when (e is System.ComponentModel.Win32Exception
+                                      or InvalidOperationException
+                                      or System.Runtime.InteropServices.ExternalException) {
+            optionalTray?.Dispose();
+            // Explorer, notifications or managed tray access may be disabled by
+            // enterprise policy. The full task window and manual start still work.
+            status.Text = "系统托盘不可用；可继续使用任务栏和普通窗口。";
+        }
+        tray = optionalTray;
         FormClosing += (_, e) => {
-            if (!quitting) { e.Cancel = true; Hide(); }
+            if (!quitting) {
+                e.Cancel = true;
+                // Enterprise policy may hide tray icons without reporting an
+                // error. Keep the taskbar route even if NotifyIcon.Visible
+                // reports true; no GUI feature can require shell integration.
+                WindowState = FormWindowState.Minimized;
+            }
         };
         timer = new System.Windows.Forms.Timer { Interval = 3000 };
         timer.Tick += (_, _) => _ = RefreshAsync();
-        Shown += (_, _) => Hide();
+        // Do NOT hide automatically at launch. A portable user must be able
+        // to find the window even when the tray icon is blocked/hidden.
         Load += (_, _) => {
             timer.Start();
             _ = RefreshAsync();
@@ -313,12 +333,12 @@ internal sealed class CenterForm : Form
                                 leaseWarnings.Remove(evt.TaskID);
                             } else if (evt.Kind.StartsWith("checkout-", StringComparison.Ordinal)) {
                                 leaseWarnings[evt.TaskID] = "⚠ 独占续租未确认";
-                                tray.ShowBalloonTip(3500,"CloudFile 独占任务",
+                                tray?.ShowBalloonTip(3500,"CloudFile 独占任务",
                                     "后台续租未确认，请打开任务中心检查。不会自动释放 Checkout。",ToolTipIcon.Warning);
                             } else {
                                 var notice = evt.Kind == "local-saved" ?
                                     "本地已修改，尚未上传" : "本地文件需要检查";
-                                tray.ShowBalloonTip(3500,"CloudFile · " + evt.FileName,
+                                tray?.ShowBalloonTip(3500,"CloudFile · " + evt.FileName,
                                     notice, evt.Kind == "needs-review" ? ToolTipIcon.Warning : ToolTipIcon.Info);
                             }
                             _ = RefreshAsync();
@@ -364,8 +384,10 @@ internal sealed class CenterForm : Form
         catch (InvalidOperationException) { }
         catch (System.ComponentModel.Win32Exception) { }
         watcher?.Dispose();
-        tray.Visible = false;
-        tray.Dispose();
+        if (tray != null) {
+            tray.Visible = false;
+            tray.Dispose();
+        }
         floating.Close();
         floating.Dispose();
         Close();
