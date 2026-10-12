@@ -241,7 +241,7 @@ func (s *Store) List() ([]Summary, error) {
 	}
 	out := make([]Summary, 0, len(entries))
 	for _, e := range entries {
-		if e.Name() == "preferences.json" || !strings.HasSuffix(e.Name(), ".json") {
+		if e.Name() == "preferences.json" || e.Name() == "focus-request.json" || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		if strings.HasPrefix(e.Name(), "session-") {

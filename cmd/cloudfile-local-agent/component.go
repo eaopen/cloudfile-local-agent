@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
@@ -140,7 +141,7 @@ func componentResult(data []byte) (any, error) {
 		return nil, fmt.Errorf("trailing component input")
 	}
 	allowed := map[string][]string{
-		"capabilities": {"type"}, "status": {"type"}, "task_summary": {"type"},
+		"capabilities": {"type"}, "status": {"type"}, "task_summary": {"type"}, "focus_task": {"type", "task_id"},
 		"editing_status":     {"type", "session_id", "intent_id"},
 		"open_session":       {"type", "protocol", "server", "ticket", "expires_at", "local_action"},
 		"query_local_file":   {"type", "repo_id", "path", "mode"},
@@ -184,6 +185,26 @@ func componentResult(data []byte) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+	} else if request.Type == "focus_task" {
+		if !request.Valid() {
+			return nil, fmt.Errorf("invalid focus request")
+		}
+		cfg, err := config.Load()
+		if err != nil || len(cfg.AllowedOrigins) == 0 {
+			return nil, fmt.Errorf("trusted local component required")
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nil, err
+		}
+		store, err := taskcenter.New(root)
+		if err != nil {
+			return nil, err
+		}
+		if err = store.RequestFocus(request.TaskID, time.Now()); err != nil {
+			return nil, err
+		}
+		response = map[string]any{"ok": true}
 	} else if request.Type == "task_summary" {
 		if !request.Valid() {
 			return nil, fmt.Errorf("invalid task summary request")
@@ -235,6 +256,9 @@ func componentResult(data []byte) (any, error) {
 					if store, err := taskcenter.New(root); err == nil {
 						if _, err := store.List(); err == nil {
 							capabilities = append(capabilities, "task_summary")
+							if store.ResidentOnline(time.Now()) {
+								capabilities = append(capabilities, "focus_task")
+							}
 						}
 					}
 				}

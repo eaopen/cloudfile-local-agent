@@ -80,6 +80,7 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
     private var floating: NSPanel?
     private var refreshing = false
     private var tasks: [TaskEntry] = []
+    private var pendingFocusID: String?
     private var timer: Timer?
     private var watcher: Process?
     private var noticePanel: NSPanel?
@@ -135,7 +136,9 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         startWatcher()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.refreshTasks()
+            self?.pollFocus()
         }
+        pollFocus()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -261,6 +264,48 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: hide)
     }
 
+    private var checkingFocus = false
+    // One GUI instance owns the short-lived focus mailbox. It heartbeats to
+    // the private Go task store, not a localhost port or browser process.
+    private func pollFocus() {
+        if checkingFocus { return }
+        checkingFocus = true
+        let binary = taskcenterBinary
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = binary
+            proc.arguments = ["--poll-focus"]
+            let output = Pipe()
+            proc.standardOutput = output
+            proc.standardError = Pipe()
+            var requested = ""
+            do {
+                try proc.run()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0,
+                   let obj = try JSONSerialization.jsonObject(with:data) as? [String:Any] {
+                    requested = obj["task_id"] as? String ?? ""
+                }
+            } catch {}
+            DispatchQueue.main.async {
+                self?.checkingFocus = false
+                if !requested.isEmpty {
+                    self?.pendingFocusID = requested
+                    self?.showWindow()
+                    self?.highlightFocusedTask()
+                }
+            }
+        }
+    }
+
+    private func highlightFocusedTask() {
+        guard let id = pendingFocusID,
+              let task = tasks.first(where: {$0.task_id == id}) else { return }
+        listWindow.title = "CloudFile · " + task.file_name
+        pendingFocusID = nil
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func refreshMenu() { refreshTasks() }
     @objc private func showWindow() {
@@ -384,6 +429,7 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
             return
         }
         tasks = entries
+        highlightFocusedTask()
         var lines = ["已管理 \(entries.count) 个本地编辑任务", "本地保存不会自动上传，所有云端操作仍需明确确认。", ""]
         for (i, t) in entries.enumerated() {
             let state = t.needs_review ? "⚠ 需要检查" : (t.local_changed ? "● 本地已修改，尚未上传" : "本地编辑中")

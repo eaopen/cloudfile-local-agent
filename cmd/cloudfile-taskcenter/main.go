@@ -30,6 +30,7 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 	flags.SetOutput(io.Discard)
 	list := flags.Bool("list", false, "print task summaries and exit")
 	watch := flags.Bool("watch", false, "resident local monitor; optional signed Checkout renewal")
+	pollFocus := flags.Bool("poll-focus", false, "current-user GUI heartbeat and pending focus")
 	goCore := flags.String("go-core-bin", "", "installed original Go Agent core for signed Checkout renewal")
 	getPreferences := flags.Bool("get-preferences", false, "read local task UI preferences")
 	setPosition := flags.Bool("set-position", false, "save a local floating-icon position")
@@ -41,7 +42,7 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	selected := 0
-	for _, chosen := range []bool{*list, *watch, *getPreferences, *setPosition} {
+	for _, chosen := range []bool{*list, *watch, *getPreferences, *setPosition, *pollFocus} {
 		if chosen {
 			selected++
 		}
@@ -95,6 +96,13 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		return enc.Encode(map[string]bool{"ok": true})
+	}
+	if *pollFocus {
+		taskID, err := store.PollFocus(time.Now())
+		if err != nil {
+			return err
+		}
+		return enc.Encode(map[string]string{"task_id": taskID})
 	}
 	if *list {
 		tasks, err := store.List()

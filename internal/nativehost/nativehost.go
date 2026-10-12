@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 const maxMessageBytes = 1024 * 1024
 
+var focusID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 type Request struct {
 	Type        string `json:"type"`
+	TaskID      string `json:"task_id,omitempty"`
 	Path        string `json:"path,omitempty"`
 	Protocol    string `json:"protocol,omitempty"`
 	Server      string `json:"server,omitempty"`
@@ -95,10 +99,18 @@ func (r Request) Valid() bool {
 	if r.Type == "status" {
 		return r.Path == ""
 	}
-	if r.Type == "task_summary" {
-		return r.Path == "" && r.Protocol == "" && r.Server == "" &&
+	if r.Type == "task_summary" || r.Type == "focus_task" {
+		clean := r.Path == "" && r.Protocol == "" && r.Server == "" &&
 			r.Ticket == "" && r.ExpiresAt == 0 && r.Mode == "" &&
 			r.RepoID == "" && r.LocalAction == "" && r.URI == ""
+		if r.Type == "task_summary" {
+			return clean && r.TaskID == ""
+		}
+		id := r.TaskID
+		if strings.HasPrefix(id, "session-") {
+			id = strings.TrimPrefix(id, "session-")
+		}
+		return clean && focusID.MatchString(id)
 	}
 	if r.Type == "update" {
 		return r.Path == ""

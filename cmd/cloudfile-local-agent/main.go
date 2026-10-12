@@ -295,12 +295,32 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 					if store, err := taskcenter.New(root); err == nil {
 						if _, err := store.List(); err == nil {
 							response.Capabilities = append(response.Capabilities, "task_summary")
+							if store.ResidentOnline(time.Now()) {
+								response.Capabilities = append(response.Capabilities, "focus_task")
+							}
 						}
 					}
 				}
 			}
 		}
 		return response
+	case "focus_task":
+		if !request.Valid() || runtime.GOOS != "darwin" {
+			return nativehost.Response{Error: "invalid local focus request"}
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return nativehost.Response{Error: "local task configuration unavailable"}
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nativehost.Response{Error: "local task workspace unavailable"}
+		}
+		store, err := taskcenter.New(root)
+		if err != nil || store.RequestFocus(request.TaskID, time.Now()) != nil {
+			return nativehost.Response{Error: "task is not active in the local TaskCenter"}
+		}
+		return nativehost.Response{OK: true}
 	case "task_summary":
 		if !request.Valid() || runtime.GOOS != "darwin" {
 			return nativehost.Response{Error: "local task summary unsupported"}

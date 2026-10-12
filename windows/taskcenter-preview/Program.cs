@@ -187,6 +187,7 @@ internal sealed class CenterForm : Form
     private Process? watcher;
     private bool querying;
     private bool quitting;
+    private string? pendingFocusID;
 
     public CenterForm(string goBinary, string? goCoreBinary)
     {
@@ -240,7 +241,10 @@ internal sealed class CenterForm : Form
             }
         };
         timer = new System.Windows.Forms.Timer { Interval = 3000 };
-        timer.Tick += (_, _) => _ = RefreshAsync();
+        timer.Tick += (_, _) => {
+            _ = RefreshAsync();
+            _ = PollFocusAsync();
+        };
         // Tray is the DEFAULT primary entry. Keep the taskbar entry as a
         // permanent fallback: NotifyIcon.Visible cannot prove Explorer actually
         // displays an icon under enterprise shell/notification restrictions.
@@ -252,6 +256,7 @@ internal sealed class CenterForm : Form
             timer.Start();
             _ = RefreshAsync();
             StartWatcher();
+            _ = PollFocusAsync();
         };
     }
 
@@ -284,13 +289,14 @@ internal sealed class CenterForm : Form
                 foreach (var t in tasks) {
                     var state = leaseWarnings.TryGetValue(t.ID, out var warn) ? warn :
                         t.Review ? "需要检查" : t.Changed ? "本地已修改，待确认" : "本地编辑中";
-                    var row = new ListViewItem(t.FileName);
+                    var row = new ListViewItem(t.FileName) { Tag = t.ID };
                     row.SubItems.Add(state);
                     row.SubItems.Add(t.Mode == "exclusive-edit" ? "独占" : "普通");
                     row.SubItems.Add(t.RepoID + "  " + t.Path);
                     list.Items.Add(row);
                 }
             } finally { list.EndUpdate(); }
+            HighlightRequestedTask();
             status.Text = $"本地任务 {tasks.Count} 项；活动独占 {activeExclusive}，状态待查 {uncertainExclusive}。保存≠上传。";
             if (tasks.Count > 0 && !floating.Visible) floating.Show();
             if (tasks.Count == 0 && floating.Visible) floating.Hide();
@@ -300,6 +306,49 @@ internal sealed class CenterForm : Form
             // Do not remove or hide existing tasks on a transient query failure.
             status.Text = "无法更新本地任务；已有任务保持显示，请检查 Agent Core。";
         } finally { querying = false; }
+    }
+
+    private void HighlightRequestedTask()
+    {
+        if (pendingFocusID == null) return;
+        foreach (ListViewItem item in list.Items) {
+            if (item.Tag is string key && key == pendingFocusID) {
+                item.Selected = true;
+                item.Focused = true;
+                item.EnsureVisible();
+                pendingFocusID = null;
+                break;
+            }
+        }
+    }
+
+    private bool pollingFocus;
+    // Only the one resident GUI polls. It also heartbeats so Chrome never
+    // advertises focus_task when no desktop listener is present.
+    private async Task PollFocusAsync()
+    {
+        if (pollingFocus || quitting) return;
+        pollingFocus = true;
+        try {
+            using var child = new Process { StartInfo = NewProcess("--poll-focus") };
+            if (!child.Start()) return;
+            var content = await child.StandardOutput.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            await child.WaitForExitAsync(timeout.Token);
+            if (child.ExitCode != 0) return;
+            using var json = JsonDocument.Parse(content);
+            string id = json.RootElement.GetProperty("task_id").GetString() ?? "";
+            if (id.Length == 0) return;
+            pendingFocusID = id;
+            ShowCenter();
+            HighlightRequestedTask();
+            // The next normal refresh will select the matching row if the
+            // desktop list has not finished loading when focus arrives.
+        } catch (Exception ex) when (ex is IOException or InvalidOperationException
+                    or JsonException or OperationCanceledException
+                    or System.ComponentModel.Win32Exception) {
+            // An unavailable focus observer must not interrupt local editing.
+        } finally { pollingFocus = false; }
     }
 
     private ProcessStartInfo NewProcess(string action)

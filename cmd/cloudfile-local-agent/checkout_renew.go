@@ -67,8 +67,18 @@ func runCheckoutRenew(input io.Reader, output io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	if err := handoff.Renew(ctx); err != nil {
-		return errors.New("current guarded Checkout renewal failed")
+	// v0.8 ownership convergence: foreground v0.7 and resident TaskCenter
+	// both reach this exact original-core entry. A cross-process lock and
+	// short confirmed-receipt reuse prevent duplicate calls for one Checkout.
+	// The Server/Journal, never the TaskCenter task index, remains authoritative.
+	reused, err := editing.RenewalGate(journal, state, req.Instance, req.DeviceID,
+		req.SessionID, time.Now(), 45*time.Second, func() error {
+			return handoff.Renew(ctx)
+		})
+	if err != nil {
+		return errors.New("current guarded Checkout renewal failed or owned by another process")
 	}
-	return json.NewEncoder(output).Encode(map[string]any{"session_id": req.SessionID, "renewed": true})
+	return json.NewEncoder(output).Encode(map[string]any{
+		"session_id": req.SessionID, "renewed": true, "reused": reused,
+	})
 }
