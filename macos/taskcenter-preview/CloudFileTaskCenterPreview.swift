@@ -5,6 +5,15 @@ import AppKit
 import Foundation
 import Darwin
 
+struct TaskPreferences: Decodable {
+    let reminder: String
+    let float_position: FloatPosition?
+}
+struct FloatPosition: Decodable {
+    let display: String
+    let x: Int
+    let y: Int
+}
 struct TaskNotice: Decodable {
     let kind: String
     let file_name: String
@@ -203,14 +212,46 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         else { showWindow() }
     }
 
+    // Read the same per-user Go task preference used by Windows. There is no
+    // second GUI-only settings database and no HTTP/Chrome registration.
+    private func loadFloatPosition() -> NSPoint? {
+        let proc = Process()
+        proc.executableURL = taskcenterBinary
+        proc.arguments = ["--get-preferences"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0,
+                  let point = try JSONDecoder().decode(TaskPreferences.self, from: data).float_position else {
+                return nil
+            }
+            return NSPoint(x: point.x, y: point.y)
+        } catch { return nil }
+    }
+
+    private func saveFloatPosition(_ point: NSPoint) {
+        let executable = taskcenterBinary
+        let screen = NSScreen.main?.localizedName ?? "main"
+        DispatchQueue.global(qos: .utility).async {
+            let proc = Process()
+            proc.executableURL = executable
+            proc.arguments = ["--set-position", "--x", String(Int(point.x)),
+                              "--y", String(Int(point.y)), "--display", "mac:" + screen]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            do { try proc.run(); proc.waitUntilExit() } catch { }
+        }
+    }
+
     private func createFloat() {
         let size: CGFloat = 48
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
-        let defaults = UserDefaults.standard
-        let hasPosition = defaults.object(forKey: "CloudFileFloatX") != nil
-        let origin = NSPoint(
-            x: hasPosition ? defaults.double(forKey: "CloudFileFloatX") : screen.maxX - size - 12,
-            y: hasPosition ? defaults.double(forKey: "CloudFileFloatY") : screen.midY)
+        let origin = loadFloatPosition() ??
+            NSPoint(x: screen.maxX - size - 12, y: screen.midY)
         let frame = NSRect(x: max(screen.minX, min(screen.maxX - size, origin.x)),
                            y: max(screen.minY, min(screen.maxY - size, origin.y)),
                            width: size, height: size)
@@ -233,10 +274,9 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         handle.toolTip = "CloudFile 文件任务（点击展开，拖动移动）"
         handle.target = self
         handle.action = #selector(toggleWindow)
-        handle.onDrop = { [weak panel] in
+        handle.onDrop = { [weak self, weak panel] in
             guard let panel = panel else { return }
-            UserDefaults.standard.set(Double(panel.frame.origin.x), forKey: "CloudFileFloatX")
-            UserDefaults.standard.set(Double(panel.frame.origin.y), forKey: "CloudFileFloatY")
+            self?.saveFloatPosition(panel.frame.origin)
         }
         panel.contentView = handle
         floating = panel

@@ -28,12 +28,32 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 	flags.SetOutput(io.Discard)
 	list := flags.Bool("list", false, "print task summaries and exit")
 	watch := flags.Bool("watch", false, "watch local stable saves, without uploading")
+	getPreferences := flags.Bool("get-preferences", false, "read local task UI preferences")
+	setPosition := flags.Bool("set-position", false, "save a local floating-icon position")
+	positionX := flags.Int("x", 0, "desktop X coordinate for --set-position")
+	positionY := flags.Int("y", 0, "desktop Y coordinate for --set-position")
+	display := flags.String("display", "", "local display identity for --set-position")
 	workspaceRoot := flags.String("workspace-root", "", "optional local diagnostic override")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || (*list == *watch) {
-		return errors.New("choose exactly one of --list or --watch")
+	selected := 0
+	for _, chosen := range []bool{*list, *watch, *getPreferences, *setPosition} {
+		if chosen {
+			selected++
+		}
+	}
+	if flags.NArg() != 0 || selected != 1 {
+		return errors.New("choose exactly one taskcenter operation")
+	}
+	seen := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if *setPosition {
+		if !seen["x"] || !seen["y"] {
+			return errors.New("position requires explicit x and y coordinates")
+		}
+	} else if seen["x"] || seen["y"] || seen["display"] {
+		return errors.New("position parameters require --set-position")
 	}
 	root := *workspaceRoot
 	if root == "" {
@@ -52,6 +72,24 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 	}
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(true)
+	if *getPreferences {
+		prefs, err := store.Preferences()
+		if err != nil {
+			return err
+		}
+		return enc.Encode(prefs)
+	}
+	if *setPosition {
+		prefs, err := store.Preferences()
+		if err != nil {
+			return err
+		}
+		prefs.FloatPosition = &taskcenter.FloatPosition{Display: *display, X: *positionX, Y: *positionY}
+		if err := store.SavePreferences(prefs); err != nil {
+			return err
+		}
+		return enc.Encode(map[string]bool{"ok": true})
+	}
 	if *list {
 		tasks, err := store.List()
 		if err != nil {

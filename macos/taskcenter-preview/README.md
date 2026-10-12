@@ -8,7 +8,7 @@
 - `Monitor`：对已登记工作副本低频检查；本地文件稳定至少 3 秒后 SHA256 去重，返回 `local-saved` / `needs-review` 事件；不自动上传。
 - `Preferences`：默认 `light`，预留 `badge`、`expand` 与浮标坐标。Go 索引采用私有文件，后续正式 UI 使用统一设置接口。
 - `cmd/cloudfile-taskcenter`：`--list` JSON 摘要、`--watch` JSON Lines 变化提示。**仅本机命令行**；无 HTTP、无后台自动启动、无任何编辑/续租/提交 API。
-- `macos/taskcenter-preview/CloudFileTaskCenterPreview.swift`：原生菜单栏入口、单一可拖动 48px 浮标、独立多文件任务窗口。窗口仅从本机 `--list` 读取状态，空任务不显示浮标；用户坐标暂由预览 UI 自己存放于 UserDefaults。已通过独立 Go --watch 只读事件连接保存轻提示（约 3.5 秒，不抢焦点），并通过当前用户预览锁避免重复实例；**未连入 Go 正式设置接口**。
+- `macos/taskcenter-preview/CloudFileTaskCenterPreview.swift`：原生菜单栏入口、单一可拖动 48px 浮标、独立多文件任务窗口。窗口仅从本机 `--list` 读取状态，空任务不显示浮标；用户坐标暂由预览 UI 自己存放于 UserDefaults。已通过独立 Go --watch 只读事件连接保存轻提示（约 3.5 秒，不抢焦点），并通过当前用户预览锁避免重复实例；**已与 Go 的浮窗位置配置接口对接，提醒模式仍以轻提示为默认**。
 
 ## 开发环境验证
 
@@ -35,3 +35,7 @@ UI 不会替用户创建/领取 Session，也不会修改云端文件。仅 UI �
 4. 独占续租/退出保护、Chrome P0 定位及真实操作依赖 v0.7 受控流程；独立开发的 UI 不能自行提交、重试或释放 Checkout。
 
 **用户确认边界**：Windows 1.2.3、macOS 2.0.3；单悬浮入口+独立任务窗口；轻提示；Chrome P0 基础联动、P1 体验优化。
+
+## v0.8 RC2 本机常驻预览
+
+在当前用户的 macOS 图形会话下，运行 `scripts/install-taskcenter-macos-v08.sh install` 从源码构建 Go CLI 与 AppKit 预览并注册专用用户级 LaunchAgent。支持 `status`、`uninstall`。**不会修改 v0.7 RC2、Chrome Native Host、用户配对或上传事务**。安装前需要 Go/Swift 构建环境；此为开发预览，不是 Developer ID 签名/公证后的正式发行程序。

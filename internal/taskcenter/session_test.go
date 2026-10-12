@@ -101,3 +101,35 @@ func TestVerifiedSessionTaskRejectsMalformedAndDamaged(t *testing.T) {
 		t.Fatalf("missing recovery error: %v", err)
 	}
 }
+
+func TestCanonicalHTTPHTTPSIsolation(t *testing.T) {
+	s, r := fixture(t)
+	v := VerifiedSession{
+		Instance:   "http://10.12.1.157:8092",
+		DeviceID:   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		SessionID:  "ffffffff-1111-2222-3333-444444444444",
+		Mode:       "local-edit",
+		BaseFileID: strings.Repeat("a", 40), WorkingCopy: r.WorkingCopy,
+	}
+	httpID, reused, err := s.RegisterVerifiedSession(v)
+	if err != nil || reused {
+		t.Fatalf("HTTP session %s %v %v", httpID, reused, err)
+	}
+	v.Instance = "https://10.12.1.157:8092"
+	httpsID, reused, err := s.RegisterVerifiedSession(v)
+	if err != nil || reused || httpsID == httpID {
+		t.Fatalf("HTTPS origin aliased HTTP %s %v %v", httpsID, reused, err)
+	}
+	entries, err := s.List()
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("different schemes lost %+v %v", entries, err)
+	}
+	v.Instance = "http://USER@10.12.1.157:8092"
+	if _, _, err = s.RegisterVerifiedSession(v); err == nil {
+		t.Fatal("URL userinfo accepted")
+	}
+	v.Instance = "HTTP://10.12.1.157:8092"
+	if _, _, err = s.RegisterVerifiedSession(v); err == nil {
+		t.Fatal("noncanonical origin accepted")
+	}
+}

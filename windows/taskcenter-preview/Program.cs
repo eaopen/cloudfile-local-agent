@@ -55,9 +55,11 @@ internal sealed class FloatHandle : Form
     private Point startPosition;
     private bool moved;
     private readonly Action clicked;
-    public FloatHandle(Action clicked)
+    private readonly string goBinary;
+    public FloatHandle(Action clicked, string goBinary)
     {
         this.clicked = clicked;
+        this.goBinary = goBinary;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -102,10 +104,7 @@ internal sealed class FloatHandle : Form
             var edge = Math.Abs(Location.X - area.Left) < Math.Abs(area.Right - (Location.X + Width))
                 ? area.Left : area.Right - Width;
             Location = new Point(edge, Location.Y);
-            try {
-                File.WriteAllText(SettingsPath(), $"{Location.X},{Location.Y}");
-            } catch (IOException) { /* position is best-effort */ }
-            catch (UnauthorizedAccessException) { /* never block task use */ }
+            SavePosition(Location, Screen.FromPoint(Location).DeviceName);
         }
     }
     public void RestorePosition()
@@ -113,24 +112,58 @@ internal sealed class FloatHandle : Form
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
         var x = area.Right - Width - 12;
         var y = area.Top + area.Height / 2;
-        try {
-            var parts = File.ReadAllText(SettingsPath()).Split(',');
-            if (parts.Length == 2 && int.TryParse(parts[0], out var px)
-                && int.TryParse(parts[1], out var py)) { x = px; y = py; }
-        } catch (IOException) { }
-          catch (UnauthorizedAccessException) { }
+        var stored = LoadPosition();
+        if (stored.HasValue) { x = stored.Value.X; y = stored.Value.Y; }
         area = Screen.FromPoint(new Point(x, y)).WorkingArea;
         Location = new Point(Math.Clamp(x, area.Left, area.Right - Width),
                              Math.Clamp(y, area.Top, area.Bottom - Height));
     }
-    private static string SettingsPath()
+    // Same Go per-user TaskCenter preferences as the macOS preview.
+    // The existing Native Host and edit journal remain the only authorities.
+    private Point? LoadPosition()
     {
-        var dir = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CloudFile", "taskcenter-preview");
-        Directory.CreateDirectory(dir);
-        return System.IO.Path.Combine(dir, "float-position.txt");
+        try {
+            using var process = new Process { StartInfo = PreferenceProcess("--get-preferences") };
+            if (!process.Start()) return null;
+            if (!process.WaitForExit(2000)) { process.Kill(); return null; }
+            if (process.ExitCode != 0) return null;
+            using var data = JsonDocument.Parse(process.StandardOutput.ReadToEnd());
+            if (!data.RootElement.TryGetProperty("float_position", out var pos) ||
+                pos.ValueKind != JsonValueKind.Object) return null;
+            return new Point(pos.GetProperty("x").GetInt32(), pos.GetProperty("y").GetInt32());
+        } catch (Exception error) when (error is IOException or InvalidOperationException
+                    or JsonException or System.ComponentModel.Win32Exception) { return null; }
     }
+    private void SavePosition(Point position, string display)
+    {
+        string go = goBinary;
+        _ = Task.Run(() => {
+            try {
+                using var process = new Process { StartInfo = new ProcessStartInfo(go) {
+                    CreateNoWindow = true, UseShellExecute = false,
+                } };
+                process.StartInfo.ArgumentList.Add("--set-position");
+                process.StartInfo.ArgumentList.Add("--x");
+                process.StartInfo.ArgumentList.Add(position.X.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                process.StartInfo.ArgumentList.Add("--y");
+                process.StartInfo.ArgumentList.Add(position.Y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                process.StartInfo.ArgumentList.Add("--display");
+                process.StartInfo.ArgumentList.Add("win:" + display);
+                if (process.Start() && !process.WaitForExit(2500)) process.Kill();
+            } catch (Exception error) when (error is IOException or InvalidOperationException
+                        or System.ComponentModel.Win32Exception) { /* position is advisory */ }
+        });
+    }
+    private ProcessStartInfo PreferenceProcess(string operation)
+    {
+        var info = new ProcessStartInfo(goBinary) {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        info.ArgumentList.Add(operation);
+        return info;
+    }
+
 }
 
 internal sealed class CenterForm : Form
@@ -163,7 +196,7 @@ internal sealed class CenterForm : Form
             Dock = DockStyle.Bottom, Height = 35, TextAlign = ContentAlignment.MiddleLeft };
         Controls.Add(list);
         Controls.Add(status);
-        floating = new FloatHandle(() => { if (Visible) Hide(); else ShowCenter(); });
+        floating = new FloatHandle(() => { if (Visible) Hide(); else ShowCenter(); }, goBinary);
         floating.RestorePosition();
 
         var menu = new ContextMenuStrip();
