@@ -244,6 +244,14 @@ func (s *Store) List() ([]Summary, error) {
 		if e.Name() == "preferences.json" || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
+		if strings.HasPrefix(e.Name(), "session-") {
+			record, err := s.readVerifiedSession(strings.TrimSuffix(e.Name(), ".json"))
+			if err != nil {
+				return nil, fmt.Errorf("session task %s: %w", e.Name(), err)
+			}
+			out = append(out, summaryVerifiedSession(record))
+			continue
+		}
 		id := strings.TrimSuffix(e.Name(), ".json")
 		t, err := s.read(id)
 		if err != nil {

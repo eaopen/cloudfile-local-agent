@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -308,6 +309,14 @@ func runOpenURIFromStdin() error {
 	}
 	if err = exec.Command("/usr/bin/open", local).Start(); err != nil {
 		return errors.New("local application unavailable; file kept")
+	}
+	// v0.8: only this path owns confirmed Keychain pairing + signed claim
+	// and signed read grant. The RC protocol has no repo/path: persist a
+	// session-scoped task without inventing a library identity. Errors in the
+	// advisory task index must never cancel the already-started v0.7 editor.
+	if err := registerPairedMacTask(open.Instance, did, open.SessionID,
+		grant.File.Mode, grant.File.BaseVersion, local); err != nil {
+		fmt.Fprintln(os.Stderr, "CloudFile task display unavailable; the local edit remains open")
 	}
 	if grant.File.Mode == "exclusive-edit" {
 		return macCheckoutController(open.Instance, did, open.SessionID, local)

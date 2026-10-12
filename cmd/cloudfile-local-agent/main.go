@@ -18,6 +18,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
+	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
 	"github.com/eaopen/cloudfile-local-agent/internal/update"
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
@@ -25,6 +26,7 @@ import (
 const version = "2.0.1"
 
 func main() {
+	indexSession := flag.Bool("index-local-session-stdin", false, "local task index only; no editing or authorization")
 	optimisticUpload := flag.Bool("optimistic-upload-stdin", false, "explicit one-shot paired-device optimistic local file upload")
 	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
 	checkoutInit := flag.Bool("init-checkout-stdin", false, "initialize a signed device Checkout with a durable journal")
@@ -49,6 +51,15 @@ func main() {
 	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
+	if *indexSession {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("local task indexing accepts only stdin"))
+		}
+		if err := indexLocalSession(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *checkoutRenew {
 		if flag.NFlag() != 1 || flag.NArg() != 0 {
 			fail(fmt.Errorf("Checkout renewal accepts only local stdin"))
@@ -278,8 +289,49 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			}
 			describeAgentUpdate(agentConfig, &response)
 			describeExtensionUpdate(agentConfig, &response)
+			// macOS Go is the registered Chrome Host; Windows retains .NET.
+			if runtime.GOOS == "darwin" {
+				if root, err := agentConfig.Root(); err == nil {
+					if store, err := taskcenter.New(root); err == nil {
+						if _, err := store.List(); err == nil {
+							response.Capabilities = append(response.Capabilities, "task_summary")
+						}
+					}
+				}
+			}
 		}
 		return response
+	case "task_summary":
+		if !request.Valid() || runtime.GOOS != "darwin" {
+			return nativehost.Response{Error: "local task summary unsupported"}
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return nativehost.Response{Error: "local task configuration unavailable"}
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nativehost.Response{Error: "local task workspace unavailable"}
+		}
+		store, err := taskcenter.New(root)
+		if err != nil {
+			return nativehost.Response{Error: "local task index unavailable"}
+		}
+		tasks, err := store.List()
+		if err != nil {
+			return nativehost.Response{Error: "local task recovery requires attention"}
+		}
+		result := make([]nativehost.TaskSummary, 0, len(tasks))
+		for _, t := range tasks {
+			if len(result) >= 50 {
+				break
+			}
+			result = append(result, nativehost.TaskSummary{
+				ID: t.ID, FileName: t.FileName, Mode: t.Mode,
+				Changed: t.LocalChanged, NeedsReview: t.NeedsReview,
+			})
+		}
+		return nativehost.Response{OK: true, Tasks: result}
 	case "check_update":
 		// 轻量更新探测：只回报版本与门禁状态，不附加应用清单/工作区等全量字段。
 		// 扩展后台每 6 小时轮询它，用来点亮角标与弹系统通知。

@@ -73,11 +73,11 @@ func (m *Monitor) Scan(now time.Time) ([]Event, error) {
 			delete(m.observed, summary.ID)
 			continue
 		}
-		t, err := m.store.Get(summary.ID)
+		workingCopy, err := m.store.WorkingCopyForMonitor(summary.ID)
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Lstat(t.WorkingCopy)
+		info, err := os.Lstat(workingCopy)
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			if !prev.warned {
 				events = append(events, Event{TaskID: summary.ID, FileName: summary.FileName, Kind: "needs-review"})
@@ -97,7 +97,7 @@ func (m *Monitor) Scan(now time.Time) ([]Event, error) {
 		if now.Sub(prev.firstSeen) < m.quiet {
 			continue
 		}
-		digest, err := stableSHA256(t.WorkingCopy, current)
+		digest, err := stableSHA256(workingCopy, current)
 		if err != nil {
 			// File was being saved or replaced during the hash. Never claim
 			// this is a stable saved version; retry after another quiet period.

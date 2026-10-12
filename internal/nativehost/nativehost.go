@@ -25,23 +25,32 @@ type Request struct {
 	URI         string `json:"uri,omitempty"`
 }
 
+// TaskSummary exposes only safe file metadata, never credentials.
+type TaskSummary struct {
+	ID          string `json:"task_id"`
+	FileName    string `json:"file_name"`
+	Mode        string `json:"mode"`
+	Changed     bool   `json:"local_changed"`
+	NeedsReview bool   `json:"needs_review"`
+}
 type Response struct {
-	LastUpdateState  string   `json:"last_update_state,omitempty"`
-	LastUpdateKind   string   `json:"last_update_kind,omitempty"`
-	OK               bool     `json:"ok"`
-	Error            string   `json:"error,omitempty"`
-	Version          string   `json:"version,omitempty"`
-	AgentFamily      string   `json:"agent_family,omitempty"`
-	Platform         string   `json:"platform,omitempty"`
-	Capabilities     []string `json:"capabilities,omitempty"`
-	ExecutablePath   string   `json:"executable_path,omitempty"`
-	Applications     []string `json:"applications,omitempty"`
-	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
-	CanOpenWorkspace bool     `json:"can_open_workspace,omitempty"`
-	UpdateAvailable  bool     `json:"update_available,omitempty"`
-	LatestVersion    string   `json:"latest_version,omitempty"`
-	LatestNotes      string   `json:"latest_notes,omitempty"`
-	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
+	LastUpdateState  string        `json:"last_update_state,omitempty"`
+	LastUpdateKind   string        `json:"last_update_kind,omitempty"`
+	OK               bool          `json:"ok"`
+	Error            string        `json:"error,omitempty"`
+	Version          string        `json:"version,omitempty"`
+	AgentFamily      string        `json:"agent_family,omitempty"`
+	Platform         string        `json:"platform,omitempty"`
+	Capabilities     []string      `json:"capabilities,omitempty"`
+	Tasks            []TaskSummary `json:"tasks,omitempty"`
+	ExecutablePath   string        `json:"executable_path,omitempty"`
+	Applications     []string      `json:"applications,omitempty"`
+	WorkspaceRoot    string        `json:"workspace_root,omitempty"`
+	CanOpenWorkspace bool          `json:"can_open_workspace,omitempty"`
+	UpdateAvailable  bool          `json:"update_available,omitempty"`
+	LatestVersion    string        `json:"latest_version,omitempty"`
+	LatestNotes      string        `json:"latest_notes,omitempty"`
+	UpdateSourceSet  bool          `json:"update_source_set,omitempty"`
 	// Extension* describe the browser extension, so the extension can drive its
 	// own update prompt over Native Messaging instead of a cross-origin fetch
 	// (which needs CORS and silently fails without it). An available version is
@@ -85,6 +94,11 @@ func (r Request) Valid() bool {
 	}
 	if r.Type == "status" {
 		return r.Path == ""
+	}
+	if r.Type == "task_summary" {
+		return r.Path == "" && r.Protocol == "" && r.Server == "" &&
+			r.Ticket == "" && r.ExpiresAt == 0 && r.Mode == "" &&
+			r.RepoID == "" && r.LocalAction == "" && r.URI == ""
 	}
 	if r.Type == "update" {
 		return r.Path == ""

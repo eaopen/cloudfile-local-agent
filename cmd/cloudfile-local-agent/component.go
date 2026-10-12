@@ -14,6 +14,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
+	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
@@ -139,7 +140,7 @@ func componentResult(data []byte) (any, error) {
 		return nil, fmt.Errorf("trailing component input")
 	}
 	allowed := map[string][]string{
-		"capabilities": {"type"}, "status": {"type"},
+		"capabilities": {"type"}, "status": {"type"}, "task_summary": {"type"},
 		"editing_status":     {"type", "session_id", "intent_id"},
 		"open_session":       {"type", "protocol", "server", "ticket", "expires_at", "local_action"},
 		"query_local_file":   {"type", "repo_id", "path", "mode"},
@@ -183,6 +184,35 @@ func componentResult(data []byte) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+	} else if request.Type == "task_summary" {
+		if !request.Valid() {
+			return nil, fmt.Errorf("invalid task summary request")
+		}
+		cfg, err := config.Load()
+		if err != nil || len(cfg.AllowedOrigins) == 0 {
+			return nil, fmt.Errorf("trusted local component required")
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nil, err
+		}
+		store, err := taskcenter.New(root)
+		if err != nil {
+			return nil, err
+		}
+		summaries, err := store.List()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]nativehost.TaskSummary, 0, len(summaries))
+		for _, t := range summaries {
+			if len(out) >= 50 {
+				break
+			}
+			out = append(out, nativehost.TaskSummary{ID: t.ID, FileName: t.FileName,
+				Mode: t.Mode, Changed: t.LocalChanged, NeedsReview: t.NeedsReview})
+		}
+		response = nativehost.Response{OK: true, Tasks: out}
 	} else if !request.Valid() {
 		return nil, fmt.Errorf("invalid component request")
 	} else {
@@ -200,6 +230,15 @@ func componentResult(data []byte) (any, error) {
 			}
 		}
 		if request.Type == "status" {
+			if len(cfg.AllowedOrigins) > 0 {
+				if root, err := cfg.Root(); err == nil {
+					if store, err := taskcenter.New(root); err == nil {
+						if _, err := store.List(); err == nil {
+							capabilities = append(capabilities, "task_summary")
+						}
+					}
+				}
+			}
 			status := nativehost.Response{OK: true, Version: version, AgentFamily: "agent2", Platform: runtime.GOOS, Capabilities: capabilities, Applications: appfinder.Names()}
 			if len(cfg.AllowedOrigins) > 0 {
 				if root, err := workspace.Resolve(cfg); err == nil {
