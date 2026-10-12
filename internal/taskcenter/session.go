@@ -215,3 +215,15 @@ func (s *Store) ExclusiveSessions() ([]VerifiedSession, error) {
 // SessionTaskID returns the stable key for this already-validated session.
 // It does not establish device authority.
 func SessionTaskID(s VerifiedSession) string { return sessionIdentity(s) }
+
+// VerifiedSessionByID is PRIVATE same-user GUI metadata. It must never be
+// returned by the Chrome Native Host or public component IPC.
+func (s *Store) VerifiedSessionByID(id string) (VerifiedSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.readVerifiedSession(id)
+	if err != nil {
+		return VerifiedSession{}, err
+	}
+	return verifiedRequest(rec), nil
+}

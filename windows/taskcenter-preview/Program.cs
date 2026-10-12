@@ -209,6 +209,12 @@ internal sealed class CenterForm : Form
             Dock = DockStyle.Bottom, Height = 35, TextAlign = ContentAlignment.MiddleLeft };
         Controls.Add(list);
         Controls.Add(status);
+        var manage = new Button {
+            Text = "管理选中文件（人工提交 / 恢复原 Intent）",
+            Dock = DockStyle.Bottom, Height = 36
+        };
+        manage.Click += (_, _) => ManageSelectedTask();
+        Controls.Add(manage);
         floating = new FloatHandle(() => { if (Visible) Hide(); else ShowCenter(); }, goBinary);
         floating.RestorePosition();
 
@@ -349,6 +355,34 @@ internal sealed class CenterForm : Form
                     or System.ComponentModel.Win32Exception) {
             // An unavailable focus observer must not interrupt local editing.
         } finally { pollingFocus = false; }
+    }
+
+    // Invoked only by an explicit local GUI click, never by file save or
+    // Chrome IPC. Reuse the existing .NET editor forms and the signed Go
+    // publishing engine rather than building a second upload workflow.
+    private void ManageSelectedTask()
+    {
+        if (list.SelectedItems.Count != 1 || list.SelectedItems[0].Tag is not string taskID ||
+            !System.Text.RegularExpressions.Regex.IsMatch(taskID, @"\Asession-[0-9a-f]{64}\z")) {
+            status.Text = "请先选中一个受信编辑会话；普通文件列表无法直接触发云端写入。";
+            return;
+        }
+        string controller = Path.Combine(Path.GetDirectoryName(goBinary)!, "CloudFile.Agent.Windows.exe");
+        if (!File.Exists(controller)) {
+            status.Text = "当前是独立任务预览；人工提交请使用完整 v0.8 Agent 一体化包。";
+            return;
+        }
+        try {
+            using var launched = Process.Start(new ProcessStartInfo(controller) {
+                UseShellExecute = false, CreateNoWindow = false,
+                ArgumentList = { "--manage-local-task", taskID }
+            });
+            if (launched is null) throw new IOException("original local controller unavailable");
+            status.Text = "已向原生文件操作窗口提交定位请求；云端写入仍需逐文件确认。";
+        } catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception
+                                    or InvalidOperationException) {
+            status.Text = "本地操作窗口不可用；工作副本和待决 Intent 均保留。";
+        }
     }
 
     private ProcessStartInfo NewProcess(string action)

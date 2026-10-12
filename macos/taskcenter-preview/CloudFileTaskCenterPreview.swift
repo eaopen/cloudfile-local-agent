@@ -125,6 +125,10 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         let refresh = NSMenuItem(title: "刷新任务", action: #selector(refreshMenu), keyEquivalent: "")
         refresh.target = self
         menu.addItem(refresh)
+        let manage = NSMenuItem(title:"管理选中文件（人工提交 / 恢复）",
+                                action:#selector(manageSelectedTask),keyEquivalent:"")
+        manage.target = self
+        menu.addItem(manage)
         menu.addItem(.separator())
         let exit = NSMenuItem(title: "退出预览", action: #selector(quit), keyEquivalent: "")
         exit.target = self
@@ -306,6 +310,62 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         pendingFocusID = nil
     }
 
+    @objc private func manageSelectedTask() {
+        guard let core = goCoreBinary,
+              FileManager.default.isExecutableFile(atPath: core) else {
+            let alert=NSAlert()
+            alert.messageText="需要完整 CloudFile v0.8 一体化包"
+            alert.informativeText="此便携任务预览没有原生编辑 Core。任务保留；不会替用户上传。"
+            alert.runModal()
+            return
+        }
+        let current = tasks.filter { $0.task_id.hasPrefix("session-") }
+        guard !current.isEmpty else {
+            let alert=NSAlert()
+            alert.messageText="没有可恢复的受信编辑会话"
+            alert.runModal()
+            return
+        }
+        let alert=NSAlert()
+        alert.messageText="选择要管理的单个本地文件"
+        alert.informativeText="仅通过原始 Agent 打开人工操作对话框；不会因本地保存自动上传。"
+        alert.addButton(withTitle:"打开原编辑操作")
+        alert.addButton(withTitle:"取消")
+        let picker=NSPopUpButton(frame:NSRect(x:0,y:0,width:350,height:28),pullsDown:false)
+        for task in current {
+            picker.addItem(withTitle:task.file_name +
+                (task.mode=="exclusive-edit" ? "（独占）" : "（普通）"))
+        }
+        alert.accessoryView=picker
+        if alert.runModal() != .alertFirstButtonReturn {return}
+        let selected=current[max(0,picker.indexOfSelectedItem)]
+        // Explicit UI action only. The Go core re-reads its original
+        // current-user verified Session and shows its own consent dialog.
+        DispatchQueue.global(qos:.userInitiated).async {
+            let child=Process()
+            child.executableURL=URL(fileURLWithPath:core)
+            child.arguments=["--manage-local-task-stdin"]
+            let stdin=Pipe()
+            child.standardInput=stdin
+            child.standardOutput=Pipe()
+            child.standardError=Pipe()
+            do {
+                try child.run()
+                let body=try JSONSerialization.data(withJSONObject:["task_id":selected.task_id])
+                stdin.fileHandleForWriting.write(body)
+                stdin.fileHandleForWriting.closeFile()
+                child.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    let warning=NSAlert()
+                    warning.messageText="无法启动原编辑操作窗口"
+                    warning.informativeText="本地文件、Journal 与未决 Intent 均保留。"
+                    warning.runModal()
+                }
+            }
+        }
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func refreshMenu() { refreshTasks() }
     @objc private func showWindow() {
@@ -465,7 +525,11 @@ let targetBinary: String
 let originalCore: String?
 if arguments.count == 1 {
     targetBinary = defaultBinary
-    originalCore = nil
+    // Full v0.8 green package ships the ORIGINAL device-signing Core next
+    // to .app, not inside its writable task index. No browser input used.
+    let companion = Bundle.main.bundleURL.deletingLastPathComponent()
+        .appendingPathComponent("cloudfile-agent2").path
+    originalCore = FileManager.default.isExecutableFile(atPath: companion) ? companion : nil
 } else if (arguments.count == 3 || arguments.count == 5) &&
           arguments[1] == "--taskcenter-bin" && arguments[2].hasPrefix("/") &&
           (arguments.count == 3 || (arguments[3] == "--go-core-bin" &&

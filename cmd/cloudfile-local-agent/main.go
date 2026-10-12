@@ -23,9 +23,11 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "2.0.1"
+const version = "2.0.3"
 
 func main() {
+	inspectLocal := flag.Bool("inspect-local-task-stdin", false, "private same-user local task info for the original desktop controller")
+	manageLocal := flag.Bool("manage-local-task-stdin", false, "macOS only: user-selected original local edit controller")
 	indexSession := flag.Bool("index-local-session-stdin", false, "local task index only; no editing or authorization")
 	optimisticUpload := flag.Bool("optimistic-upload-stdin", false, "explicit one-shot paired-device optimistic local file upload")
 	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
@@ -51,6 +53,24 @@ func main() {
 	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
+	if *inspectLocal {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("private task inspection accepts stdin only"))
+		}
+		if err := runInspectLocalTask(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *manageLocal {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("local user action accepts stdin only"))
+		}
+		if err := runManageLocalTask(os.Stdin); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *indexSession {
 		if flag.NFlag() != 1 || flag.NArg() != 0 {
 			fail(fmt.Errorf("local task indexing accepts only stdin"))

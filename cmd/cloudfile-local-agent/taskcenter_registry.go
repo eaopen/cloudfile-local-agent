@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
@@ -36,6 +38,17 @@ func registerPairedMacTask(instance, deviceID, sessionID, mode, baseFileID, copy
 		// current user's Launch Services (without admin or extra Host).
 		// If it is not registered/allowed by Gatekeeper, editing stays usable.
 		// -g explicitly avoids stealing focus while Office/CAD starts.
+		// The complete v0.8 green package ships the .app next to the Go
+		// controller, so no prior LaunchServices registration is required.
+		// Never take any executable path from the remote session/Chrome.
+		if executable, err := os.Executable(); err == nil {
+			app := filepath.Join(filepath.Dir(executable), "CloudFileTaskCenter.app")
+			if info, err := os.Lstat(app); err == nil &&
+				info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				_ = launch.Detached("/usr/bin/open", "-g", app)
+				return nil
+			}
+		}
 		_ = launch.Detached("/usr/bin/open", "-g", "-b",
 			"com.cloudfile.taskcenter.v08.preview")
 	}

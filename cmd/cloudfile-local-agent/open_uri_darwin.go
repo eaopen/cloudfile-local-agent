@@ -321,13 +321,73 @@ func runOpenURIFromStdin() error {
 	if grant.File.Mode == "exclusive-edit" {
 		return macCheckoutController(open.Instance, did, open.SessionID, local)
 	}
-	base := grant.File.BaseVersion
+	return macOptimisticController(open.Instance, did, open.SessionID, grant.File.BaseVersion, local)
+}
+
+func macOptimisticController(instance, did, sid, base, local string) error {
+	release, err := acquireMacSessionDialog(sid)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// Reconcile the original immutable version chain BEFORE any new save.
+	// Never make a second Intent while the first remote result is unknown.
+	chainResolved := false
+	for i := 0; i < 32; i++ {
+		check := optimisticUploadRequest{Instance: instance, DeviceID: did, SessionID: sid,
+			BaseFileID: base, Action: "inspect", UserConfirmed: true}
+		data, _ := json.Marshal(check)
+		var out bytes.Buffer
+		if err := runOptimisticUpload(bytes.NewReader(data), &out); err != nil {
+			return errors.New("original optimistic journal unavailable; preserve local copy")
+		}
+		var observed struct {
+			State  string                   `json:"state"`
+			Result editing.OptimisticResult `json:"result"`
+		}
+		if json.Unmarshal(out.Bytes(), &observed) != nil {
+			return errors.New("original optimistic status unreadable")
+		}
+		switch observed.State {
+		case "not-found":
+			chainResolved = true
+		case "published":
+			if observed.Result.BaseFileID != base || len(observed.Result.FileID) != 40 ||
+				observed.Result.FileID == base {
+				return errors.New("inconsistent original published version")
+			}
+			base = observed.Result.FileID
+		case "pending":
+			selected, err := macDialog("pending", "Keep Local and Close", "Recover Original Upload")
+			if err != nil || selected == "Keep Local and Close" {
+				return nil
+			}
+			check.Action = "recover"
+			data, _ = json.Marshal(check)
+			out.Reset()
+			if err := runOptimisticUpload(bytes.NewReader(data), &out); err != nil ||
+				json.Unmarshal(out.Bytes(), &observed) != nil ||
+				observed.State != "published" || observed.Result.BaseFileID != base ||
+				len(observed.Result.FileID) != 40 {
+				return errors.New("original optimistic Intent remains unresolved")
+			}
+			base = observed.Result.FileID
+		default:
+			return errors.New("original optimistic status unknown")
+		}
+		if chainResolved {
+			break
+		}
+	}
+	if !chainResolved {
+		return errors.New("optimistic version chain depth exceeded")
+	}
 	for {
 		action, dialogErr := macDialog("save", "Keep Local and Close", "Save Cloud and Continue", "Save Cloud and Finish")
 		if dialogErr != nil || action == "Keep Local and Close" {
 			return nil
 		}
-		request := optimisticUploadRequest{Instance: open.Instance, SessionID: open.SessionID,
+		request := optimisticUploadRequest{Instance: instance, SessionID: sid,
 			DeviceID: did, BaseFileID: base, WorkingCopy: local, Action: "upload", UserConfirmed: true}
 		encoded, _ := json.Marshal(request)
 		var response bytes.Buffer
@@ -377,6 +437,11 @@ func runOpenURIFromStdin() error {
 // explicit. It reuses the actual Checkout Journal and Go Upload Core, not a
 // second browser credential or a background v0.8 TaskManager.
 func macCheckoutController(instance, did, sid, local string) error {
+	release, err := acquireMacSessionDialog(sid)
+	if err != nil {
+		return err
+	}
+	defer release()
 	renew := func() bool {
 		req, _ := json.Marshal(checkoutInitRequest{Instance: instance, DeviceID: did,
 			SessionID: sid, UserConfirmed: true})

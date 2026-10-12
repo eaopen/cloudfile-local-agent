@@ -14,6 +14,11 @@ if not exist "%TASKCORE%" (
   exit /b 2
 )
 REM UI has its own per-user singleton; no second Chrome Native Host.
-start "" "%UI%" --taskcenter-bin "%TASKCORE%" %*
+set "SIGNEDCORE=%HERE%CloudFile.Agent2.Go.exe"
+if exist "%SIGNEDCORE%" (
+    start "" "%UI%" --taskcenter-bin "%TASKCORE%" --go-core-bin "%SIGNEDCORE%" %*
+) else (
+    start "" "%UI%" --taskcenter-bin "%TASKCORE%" %*
+)
 if errorlevel 1 exit /b 1
 exit /b 0

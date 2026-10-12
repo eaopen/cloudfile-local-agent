@@ -22,7 +22,7 @@ func TestComponentCapabilitiesAndRejectedOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := envelope.Result
-	if !envelope.OK || envelope.IPCVersion != 1 || report["core_version"] != "2.0.1" || report["native_device_publish"] != false || report["automatic_upload"] != false {
+	if !envelope.OK || envelope.IPCVersion != 1 || report["core_version"] != "2.0.3" || report["native_device_publish"] != false || report["automatic_upload"] != false {
 		t.Fatalf("invalid report: %v", envelope)
 	}
 	for _, input := range []string{

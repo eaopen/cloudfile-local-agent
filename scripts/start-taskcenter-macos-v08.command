@@ -9,4 +9,8 @@ if [[ ! -x "$binary" || ! -x "$taskcore" ]]; then
     echo "CloudFile TaskCenter portable bundle is incomplete." >&2
     exit 2
 fi
+original="$here/cloudfile-agent2"
+if [[ -x "$original" ]]; then
+    exec "$binary" --taskcenter-bin "$taskcore" --go-core-bin "$original" "$@"
+fi
 exec "$binary" --taskcenter-bin "$taskcore" "$@"
