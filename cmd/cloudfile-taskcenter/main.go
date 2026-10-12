@@ -19,15 +19,18 @@ import (
 )
 
 type listResult struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Tasks         []taskcenter.Summary `json:"tasks"`
+	SchemaVersion      int                  `json:"schema_version"`
+	Tasks              []taskcenter.Summary `json:"tasks"`
+	ActiveExclusive    int                  `json:"active_exclusive"`
+	UncertainExclusive int                  `json:"uncertain_exclusive"`
 }
 
 func execute(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("cloudfile-taskcenter", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	list := flags.Bool("list", false, "print task summaries and exit")
-	watch := flags.Bool("watch", false, "watch local stable saves, without uploading")
+	watch := flags.Bool("watch", false, "resident local monitor; optional signed Checkout renewal")
+	goCore := flags.String("go-core-bin", "", "installed original Go Agent core for signed Checkout renewal")
 	getPreferences := flags.Bool("get-preferences", false, "read local task UI preferences")
 	setPosition := flags.Bool("set-position", false, "save a local floating-icon position")
 	positionX := flags.Int("x", 0, "desktop X coordinate for --set-position")
@@ -54,6 +57,9 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 		}
 	} else if seen["x"] || seen["y"] || seen["display"] {
 		return errors.New("position parameters require --set-position")
+	}
+	if *goCore != "" && !*watch {
+		return errors.New("Go core is only used by the resident watcher")
 	}
 	root := *workspaceRoot
 	if root == "" {
@@ -95,7 +101,16 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return enc.Encode(listResult{SchemaVersion: 1, Tasks: tasks})
+		active, uncertain, err := exclusiveCounts(store)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(listResult{SchemaVersion: 1, Tasks: tasks,
+			ActiveExclusive: active, UncertainExclusive: uncertain})
+	}
+	keeper, err := newRenewal(store, *goCore)
+	if err != nil {
+		return err
 	}
 	monitor, err := taskcenter.NewMonitor(store, 3*time.Second)
 	if err != nil {
@@ -103,8 +118,10 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	// One initial scan records pre-existing local changes without immediately
-	// announcing them as new saves. Later polls are advisory only.
+	// The local monitor stays resident even after a browser/editor dialog closes.
+	// Signed renewal checks are at most once every 4 minutes per task.
+	// Zero Core config produces a visible "unmanaged" warning, never fake renewal.
+	nextRenew := time.Time{}
 	poll := func() error {
 		events, err := monitor.Scan(time.Now())
 		if err != nil {
@@ -114,6 +131,21 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 			if err := enc.Encode(e); err != nil {
 				return err
 			}
+		}
+		if !time.Now().Before(nextRenew) {
+			leaseEvents, err := keeper.RunOneCycle(ctx)
+			if err != nil {
+				if err := enc.Encode(leaseEvent{Kind: "checkout-needs-review"}); err != nil {
+					return err
+				}
+			} else {
+				for _, e := range leaseEvents {
+					if err := enc.Encode(e); err != nil {
+						return err
+					}
+				}
+			}
+			nextRenew = time.Now().Add(leaseInterval)
 		}
 		return nil
 	}

@@ -21,6 +21,8 @@ struct TaskNotice: Decodable {
 
 struct TaskList: Decodable {
     let tasks: [TaskEntry]
+    let active_exclusive: Int
+    let uncertain_exclusive: Int
 }
 struct TaskEntry: Decodable {
     let task_id: String
@@ -65,6 +67,10 @@ final class FloatingHandle: NSButton {
 
 final class TaskCenterPreview: NSObject, NSApplicationDelegate {
     private let taskcenterBinary: URL
+    private let goCoreBinary: String?
+    private var lastLeaseWarning: String?
+    private var activeExclusive = 0
+    private var uncertainExclusive = 0
     private var status: NSStatusItem?
     private let listWindow = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
@@ -79,7 +85,10 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
     private var noticePanel: NSPanel?
     private var noticeHide: DispatchWorkItem?
 
-    init(binary: URL) { self.taskcenterBinary = binary }
+    init(binary: URL, core: String?) {
+        self.taskcenterBinary = binary
+        self.goCoreBinary = core
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -126,6 +135,36 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Re-query durable Journal status instead of trusting the last cached UI refresh.
+        let proc = Process()
+        proc.executableURL = taskcenterBinary
+        proc.arguments = ["--list"]
+        let output = Pipe()
+        proc.standardOutput = output
+        proc.standardError = Pipe()
+        var active = activeExclusive
+        var uncertain = uncertainExclusive
+        do {
+            try proc.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            if proc.terminationStatus != 0 { throw NSError(domain:"CloudFileTaskCenter",code:1) }
+            let found = try JSONDecoder().decode(TaskList.self,from:data)
+            active = found.active_exclusive
+            uncertain = found.uncertain_exclusive
+        } catch {
+            uncertain += 1 // No false safe-to-exit conclusion on a failed journal query.
+        }
+        if active + uncertain == 0 { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "仍有独占编辑任务"
+        alert.informativeText = "退出会停止 TaskCenter 后台续租，但不会释放 Checkout 或删除本地副本。建议保持 Agent 运行，并在任务中心完成编辑。"
+        alert.addButton(withTitle: "继续运行")
+        alert.addButton(withTitle: "仍然退出")
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         noticeHide?.cancel()
         if let proc = watcher, proc.isRunning { proc.terminate() }
@@ -136,6 +175,9 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = taskcenterBinary
         process.arguments = ["--watch"]
+        if let core = goCoreBinary {
+            process.arguments! += ["--go-core-bin", core]
+        }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = Pipe()
@@ -155,7 +197,17 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
                         guard let notice = try? JSONDecoder().decode(TaskNotice.self, from: Data(packet)),
                               notice.kind == "local-saved" || notice.kind == "needs-review" else { continue }
                         DispatchQueue.main.async { [weak self] in
-                            self?.showNotice(notice)
+                            if notice.kind.hasPrefix("checkout-") {
+                                if notice.kind == "checkout-renewed" || notice.kind == "checkout-ended" {
+                                    self?.lastLeaseWarning = nil
+                                } else {
+                                    self?.lastLeaseWarning = "独占任务续租状态需要检查（不自动释放锁）"
+                                    self?.showNotice(TaskNotice(kind: notice.kind,
+                                        file_name: notice.file_name))
+                                }
+                            } else {
+                                self?.showNotice(notice)
+                            }
                             self?.refreshTasks()
                         }
                     }
@@ -169,9 +221,14 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
 
     // Passive, short-lived tip: does not activate the application.
     private func showNotice(_ event: TaskNotice) {
-        let message = event.kind == "local-saved"
-            ? "\(event.file_name)：本地已修改，尚未上传"
-            : "\(event.file_name)：本地文件需要检查"
+        let message: String
+        if event.kind == "local-saved" {
+            message = "\(event.file_name)：本地已修改，尚未上传"
+        } else if event.kind.hasPrefix("checkout-") {
+            message = "\(event.file_name)：独占续租未确认，请检查任务状态"
+        } else {
+            message = "\(event.file_name)：本地文件需要检查"
+        }
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
         let rect = NSRect(x: screen.maxX - 370, y: screen.maxY - 72, width: 350, height: 56)
         if noticePanel == nil {
@@ -294,18 +351,25 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
             p.standardOutput = output
             p.standardError = Pipe()
             var entries: [TaskEntry] = []
+            var active = 0
+            var uncertain = 0
             var failure: String?
             do {
                 try p.run()
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
                 if p.terminationStatus != 0 { throw NSError(domain: "CloudFileTaskCenter", code: Int(p.terminationStatus)) }
-                entries = try JSONDecoder().decode(TaskList.self, from: data).tasks
+                let response = try JSONDecoder().decode(TaskList.self, from: data)
+                entries = response.tasks
+                active = response.active_exclusive
+                uncertain = response.uncertain_exclusive
             } catch {
                 failure = "本地任务读取失败；请检查 Agent Core 与本地目录。"
             }
             DispatchQueue.main.async {
                 self?.refreshing = false
+                self?.activeExclusive = active
+                self?.uncertainExclusive = uncertain
                 self?.render(entries: entries, failure: failure)
             }
         }
@@ -326,6 +390,10 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
             lines.append("    库：\(t.repo_id)")
             lines.append("")
         }
+        if activeExclusive + uncertainExclusive > 0 {
+            lines.append("独占任务：\(activeExclusive) 个活动，\(uncertainExclusive) 个状态待检查")
+        }
+        if let warning = lastLeaseWarning { lines.append("⚠ " + warning) }
         if entries.isEmpty { lines.append("当前没有本地编辑任务。") }
         content.string = lines.joined(separator: "\n")
         if !entries.isEmpty {
@@ -338,8 +406,10 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 3, arguments[1] == "--taskcenter-bin",
-      arguments[2].hasPrefix("/") else {
+guard (arguments.count == 3 || arguments.count == 5),
+      arguments[1] == "--taskcenter-bin", arguments[2].hasPrefix("/"),
+      (arguments.count == 3 || (arguments[3] == "--go-core-bin" &&
+                                arguments[4].hasPrefix("/"))) else {
     fputs("Usage: CloudFileTaskCenterPreview --taskcenter-bin /absolute/path/to/cloudfile-taskcenter\n", stderr)
     exit(2)
 }
@@ -354,6 +424,7 @@ guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
     exit(1)
 }
 let app = NSApplication.shared
-let delegate = TaskCenterPreview(binary: URL(fileURLWithPath: arguments[2]))
+let delegate = TaskCenterPreview(binary: URL(fileURLWithPath: arguments[2]),
+    core: arguments.count == 5 ? arguments[4] : nil)
 app.delegate = delegate
 app.run()

@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,3 +183,35 @@ func (s *Store) WorkingCopyForMonitor(id string) (string, error) {
 	r, err := s.read(id)
 	return r.WorkingCopy, err
 }
+
+// ExclusiveSessions is for the same-user resident supervisor only. Never
+// expose this result through Native Messaging: it contains session metadata.
+func (s *Store) ExclusiveSessions() ([]VerifiedSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]VerifiedSession, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "session-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".json")
+		rec, err := s.readVerifiedSession(id)
+		if err != nil {
+			return nil, fmt.Errorf("exclusive task index requires reconciliation: %w", err)
+		}
+		if rec.Mode == "exclusive-edit" {
+			out = append(out, verifiedRequest(rec))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
+	return out, nil
+}
+
+// SessionTaskID returns the stable key for this already-validated session.
+// It does not establish device authority.
+func SessionTaskID(s VerifiedSession) string { return sessionIdentity(s) }

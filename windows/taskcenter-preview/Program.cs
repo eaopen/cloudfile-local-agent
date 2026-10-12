@@ -11,6 +11,8 @@ namespace CloudFile.TaskCenter.Preview;
 internal sealed class TaskList
 {
     [JsonPropertyName("tasks")] public List<TaskEntry> Tasks { get; set; } = new();
+    [JsonPropertyName("active_exclusive")] public int ActiveExclusive { get; set; }
+    [JsonPropertyName("uncertain_exclusive")] public int UncertainExclusive { get; set; }
 }
 internal sealed class TaskEntry
 {
@@ -26,6 +28,7 @@ internal sealed class TaskEvent
 {
     [JsonPropertyName("kind")] public string Kind { get; set; } = "";
     [JsonPropertyName("file_name")] public string FileName { get; set; } = "";
+    [JsonPropertyName("task_id")] public string TaskID { get; set; } = "";
 }
 
 internal static class Program
@@ -33,8 +36,10 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        if (args.Length != 2 || args[0] != "--taskcenter-bin" ||
-            !System.IO.Path.IsPathFullyQualified(args[1]) || !File.Exists(args[1]))
+        if ((args.Length != 2 && args.Length != 4) || args[0] != "--taskcenter-bin" ||
+            !System.IO.Path.IsPathFullyQualified(args[1]) || !File.Exists(args[1]) ||
+            (args.Length == 4 && (args[2] != "--go-core-bin" ||
+                !System.IO.Path.IsPathFullyQualified(args[3]) || !File.Exists(args[3]))))
         {
             MessageBox.Show("用法：TaskCenterPreview --taskcenter-bin <完整本机 Go CLI 路径>",
                 "CloudFile 本地任务预览");
@@ -44,7 +49,7 @@ internal static class Program
         using var mutex = new Mutex(true, @"Local\CloudFileTaskCenterPreviewV08", out var acquired);
         if (!acquired) return;
         ApplicationConfiguration.Initialize();
-        using var center = new CenterForm(args[1]);
+        using var center = new CenterForm(args[1], args.Length == 4 ? args[3] : null);
         Application.Run(center);
     }
 }
@@ -169,6 +174,10 @@ internal sealed class FloatHandle : Form
 internal sealed class CenterForm : Form
 {
     private readonly string goBinary;
+    private readonly string? goCoreBinary;
+    private readonly Dictionary<string,string> leaseWarnings = new();
+    private int activeExclusive;
+    private int uncertainExclusive;
     private readonly NotifyIcon tray;
     private readonly FloatHandle floating;
     private readonly ListView list;
@@ -179,9 +188,10 @@ internal sealed class CenterForm : Form
     private bool querying;
     private bool quitting;
 
-    public CenterForm(string goBinary)
+    public CenterForm(string goBinary, string? goCoreBinary)
     {
         this.goBinary = goBinary;
+        this.goCoreBinary = goCoreBinary;
         Text = "CloudFile 任务中心（本地预览）";
         ClientSize = new Size(660, 380);
         MinimumSize = new Size(490, 300);
@@ -238,13 +248,17 @@ internal sealed class CenterForm : Form
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await p.WaitForExitAsync(timeout.Token);
             if (p.ExitCode != 0) throw new IOException("Go task inspection failed");
-            var tasks = JsonSerializer.Deserialize<TaskList>(data)?.Tasks
+            var snapshot = JsonSerializer.Deserialize<TaskList>(data)
                 ?? throw new IOException("invalid task summary");
+            var tasks = snapshot.Tasks;
+            activeExclusive = snapshot.ActiveExclusive;
+            uncertainExclusive = snapshot.UncertainExclusive;
             list.BeginUpdate();
             try {
                 list.Items.Clear();
                 foreach (var t in tasks) {
-                    var state = t.Review ? "需要检查" : t.Changed ? "本地已修改，待确认" : "本地编辑中";
+                    var state = leaseWarnings.TryGetValue(t.ID, out var warn) ? warn :
+                        t.Review ? "需要检查" : t.Changed ? "本地已修改，待确认" : "本地编辑中";
                     var row = new ListViewItem(t.FileName);
                     row.SubItems.Add(state);
                     row.SubItems.Add(t.Mode == "exclusive-edit" ? "独占" : "普通");
@@ -252,7 +266,7 @@ internal sealed class CenterForm : Form
                     list.Items.Add(row);
                 }
             } finally { list.EndUpdate(); }
-            status.Text = $"本地任务 {tasks.Count} 项。保存≠上传；云端提交需用户明确确认。";
+            status.Text = $"本地任务 {tasks.Count} 项；活动独占 {activeExclusive}，状态待查 {uncertainExclusive}。保存≠上传。";
             if (tasks.Count > 0 && !floating.Visible) floating.Show();
             if (tasks.Count == 0 && floating.Visible) floating.Hide();
         } catch (Exception e) when (e is IOException or InvalidOperationException
@@ -276,7 +290,12 @@ internal sealed class CenterForm : Form
     private void StartWatcher()
     {
         try {
-            watcher = new Process { StartInfo = NewProcess("--watch") };
+            var watchInfo = NewProcess("--watch");
+            if (goCoreBinary != null) {
+                watchInfo.ArgumentList.Add("--go-core-bin");
+                watchInfo.ArgumentList.Add(goCoreBinary);
+            }
+            watcher = new Process { StartInfo = watchInfo };
             watcher.Start();
             _ = Task.Run(async () => {
                 try {
@@ -286,13 +305,22 @@ internal sealed class CenterForm : Form
                         TaskEvent? evt = null;
                         try { evt = JsonSerializer.Deserialize<TaskEvent>(line); }
                         catch (JsonException) { continue; }
-                        if (evt == null || evt.Kind is not ("local-saved" or "needs-review")) continue;
+                        if (evt == null || (evt.Kind is not ("local-saved" or "needs-review") &&
+                            !evt.Kind.StartsWith("checkout-", StringComparison.Ordinal))) continue;
                         BeginInvoke(() => {
                             if (quitting) return;
-                            var notice = evt.Kind == "local-saved"
-                                ? "本地已修改，尚未上传" : "本地文件需要检查";
-                            tray.ShowBalloonTip(3500, "CloudFile · " + evt.FileName,
-                                notice, evt.Kind == "needs-review" ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                            if (evt.Kind is "checkout-renewed" or "checkout-ended") {
+                                leaseWarnings.Remove(evt.TaskID);
+                            } else if (evt.Kind.StartsWith("checkout-", StringComparison.Ordinal)) {
+                                leaseWarnings[evt.TaskID] = "⚠ 独占续租未确认";
+                                tray.ShowBalloonTip(3500,"CloudFile 独占任务",
+                                    "后台续租未确认，请打开任务中心检查。不会自动释放 Checkout。",ToolTipIcon.Warning);
+                            } else {
+                                var notice = evt.Kind == "local-saved" ?
+                                    "本地已修改，尚未上传" : "本地文件需要检查";
+                                tray.ShowBalloonTip(3500,"CloudFile · " + evt.FileName,
+                                    notice, evt.Kind == "needs-review" ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                            }
                             _ = RefreshAsync();
                         });
                     }
@@ -306,6 +334,29 @@ internal sealed class CenterForm : Form
 
     private void ExitPreview()
     {
+        // Never silently stop renewing a live Checkout. Re-read durable
+        // journal state, not only last UI refresh. Failure must warn too.
+        int active = activeExclusive, uncertain = uncertainExclusive;
+        try {
+            using var check = new Process { StartInfo = NewProcess("--list") };
+            check.Start();
+            string data = check.StandardOutput.ReadToEnd();
+            if (!check.WaitForExit(3000) || check.ExitCode != 0)
+                throw new IOException("unknown task list");
+            var state = JsonSerializer.Deserialize<TaskList>(data)
+                ?? throw new IOException("unknown task list");
+            active = state.ActiveExclusive;
+            uncertain = state.UncertainExclusive;
+        } catch (Exception ex) when (ex is IOException or InvalidOperationException
+                    or JsonException or System.ComponentModel.Win32Exception) {
+            uncertain++;
+        }
+        if (active + uncertain > 0) {
+            if (MessageBox.Show(this,
+                "仍有独占编辑任务。退出将停止 TaskCenter 后台续租，不会释放 Checkout 或删除本地文件。仍然退出？",
+                "CloudFile 独占编辑", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        }
         quitting = true;
         timer.Stop();
         watcherStop.Cancel();

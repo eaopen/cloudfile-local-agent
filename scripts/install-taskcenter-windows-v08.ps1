@@ -4,6 +4,7 @@
 param(
     [ValidateSet('Install','Status','Uninstall')][string]$Action = 'Status',
     [string]$PackageDirectory = '',
+    [string]$GoCoreBinary = '',
     [switch]$StartNow
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,13 @@ $runName = 'CloudFileTaskCenterV08Preview'
 $uiExe = Join-Path $installDir 'CloudFile.TaskCenter.Preview.exe'
 $goExe = Join-Path $installDir 'cloudfile-taskcenter.exe'
 $runCommand = '"' + $uiExe + '" --taskcenter-bin "' + $goExe + '"'
+if ($GoCoreBinary) {
+    if (-not [System.IO.Path]::IsPathFullyQualified($GoCoreBinary) -or
+        -not (Test-Path -LiteralPath $GoCoreBinary -PathType Leaf)) {
+        throw 'Original installed v0.7 Go Core executable required for renewal.'
+    }
+    $runCommand += ' --go-core-bin "' + $GoCoreBinary + '"'
+}
 
 if ($Action -eq 'Install') {
     if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
@@ -35,9 +43,12 @@ if ($Action -eq 'Install') {
     New-Item -Path $runKey -Force | Out-Null
     New-ItemProperty -Path $runKey -Name $runName -PropertyType String -Value $runCommand -Force | Out-Null
     if ($StartNow) {
-        Start-Process -FilePath $uiExe -ArgumentList @('--taskcenter-bin', ('"' + $goExe + '"'))
+        $parameters = @('--taskcenter-bin', ('"' + $goExe + '"'))
+        if ($GoCoreBinary) { $parameters += @('--go-core-bin', ('"' + $GoCoreBinary + '"')) }
+        Start-Process -FilePath $uiExe -ArgumentList $parameters
     }
-    Write-Output 'v0.8 current-user preview startup installed; no Host/Checkout changes.'
+    if (-not $GoCoreBinary) { Write-Warning 'Checkout renewal is NOT configured; exclusive tasks require review.' }
+    Write-Output 'v0.8 current-user preview startup installed; no Host/Checkout changes.' '
 }
 elseif ($Action -eq 'Uninstall') {
     Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
@@ -48,7 +59,9 @@ elseif ($Action -eq 'Uninstall') {
 }
 else {
     $registered = (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue).$runName
-    Write-Output ('Per-user startup: ' + [bool]($registered -eq $runCommand))
+    Write-Output ('Per-user startup: ' + [bool]($registered -and $registered.StartsWith(
+        ('"' + $uiExe + '" --taskcenter-bin "' + $goExe + '"'),
+        [System.StringComparison]::OrdinalIgnoreCase)))
     Write-Output ('Preview binaries: ' + [bool]((Test-Path -LiteralPath $uiExe -PathType Leaf) -and
                  (Test-Path -LiteralPath $goExe -PathType Leaf)))
 }
