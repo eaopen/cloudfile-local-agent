@@ -241,8 +241,13 @@ internal sealed class CenterForm : Form
         };
         timer = new System.Windows.Forms.Timer { Interval = 3000 };
         timer.Tick += (_, _) => _ = RefreshAsync();
-        // Do NOT hide automatically at launch. A portable user must be able
-        // to find the window even when the tray icon is blocked/hidden.
+        // Tray is the DEFAULT primary entry. Keep the taskbar entry as a
+        // permanent fallback: NotifyIcon.Visible cannot prove Explorer actually
+        // displays an icon under enterprise shell/notification restrictions.
+        // If tray creation fails, show the ordinary task window instead.
+        Shown += (_, _) => {
+            if (tray is { Visible: true }) WindowState = FormWindowState.Minimized;
+        };
         Load += (_, _) => {
             timer.Start();
             _ = RefreshAsync();

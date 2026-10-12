@@ -36,7 +36,7 @@ dotnet run --project CloudFile.TaskCenter.Preview.csproj -- --taskcenter-bin C:\
 
 解压绿色包后，直接双击同目录 `start-taskcenter.cmd`，或者运行 `CloudFile.TaskCenter.Preview.exe --taskcenter-bin <同目录 cloudfile-taskcenter.exe>`。无需 UAC、MSI、PowerShell、系统服务、HKLM、系统目录写入、Windows 启动项，也无需目标机安装 .NET Runtime/SDK（绿色包已自包含）。
 
-- 系统托盘 `NotifyIcon` 一般无需管理员权限。若托盘/通知被企业策略禁止，Agent 照常显示普通 WinForms 窗口；启动时不自动隐藏，关闭时优先最小化到任务栏，保留可找回的入口。
+- 系统托盘 `NotifyIcon` 默认启用、是主要入口；创建成功后启动窗口默认最小化，**任务栏图标仍存在作为第二入口**。若托盘/通知被企业策略禁止或初始化失败，直接显示普通 WinForms 窗口。关闭普通窗口只最小化到任务栏，不让用户失去所有入口。
 - 开机自启默认为**关闭**。可选 `optional-user-autostart.ps1` 的 `-EnableAutoStart` 尝试 HKCU Run；若被权限/策略拒绝，仅警告，不阻断本地运行或复制到当前用户可写目录。
 - 如果 PowerShell 执行策略阻止脚本，直接运行 `start-taskcenter.cmd` 即可。使用可写目录（如 Downloads/用户文件夹），不用安装向导。
 - “无需安装”不等于能绕过企业 AppLocker/WDAC、执行白名单、杀毒、Chrome 扩展或 Native Host 的组织策略：这些策略若禁止程序/扩展运行，不能保证浏览器一键打开；应报告明确限制，不能自动要求管理员提权。

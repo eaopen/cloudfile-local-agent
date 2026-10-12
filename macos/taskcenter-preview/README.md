@@ -8,7 +8,7 @@
 - `Monitor`：对已登记工作副本低频检查；本地文件稳定至少 3 秒后 SHA256 去重，返回 `local-saved` / `needs-review` 事件；不自动上传。
 - `Preferences`：默认 `light`，预留 `badge`、`expand` 与浮标坐标。Go 索引采用私有文件，后续正式 UI 使用统一设置接口。
 - `cmd/cloudfile-taskcenter`：`--list` JSON 摘要、`--watch` JSON Lines 变化提示。**仅本机命令行**；无 HTTP、无后台自动启动、无任何编辑/续租/提交 API。
-- `macos/taskcenter-preview/CloudFileTaskCenterPreview.swift`：原生菜单栏入口、单一可拖动 48px 浮标、独立多文件任务窗口。窗口仅从本机 `--list` 读取状态，空任务不显示浮标；用户坐标暂由预览 UI 自己存放于 UserDefaults。已通过独立 Go --watch 只读事件连接保存轻提示（约 3.5 秒，不抢焦点），并通过当前用户预览锁避免重复实例；**已与 Go 的浮窗位置配置接口对接，提醒模式仍以轻提示为默认**。
+- `macos/taskcenter-preview/CloudFileTaskCenterPreview.swift`：原生菜单栏入口、单一可拖动 48px 浮标、独立多文件任务窗口。窗口仅从本机 `--list` 读取状态，空任务不显示浮标；用户浮标位置由 Go 私有 Preferences 统一保存。已通过独立 Go --watch 只读事件连接保存轻提示（约 3.5 秒，不抢焦点），并通过当前用户预览锁避免重复实例；**已与 Go 的浮窗位置配置接口对接，提醒模式仍以轻提示为默认**。
 
 ## 开发环境验证
 
@@ -39,3 +39,13 @@ UI 不会替用户创建/领取 Session，也不会修改云端文件。仅 UI �
 ## v0.8 RC2 本机常驻预览
 
 在当前用户的 macOS 图形会话下，运行 `scripts/install-taskcenter-macos-v08.sh install` 从源码构建 Go CLI 与 AppKit 预览并注册专用用户级 LaunchAgent。支持 `status`、`uninstall`。**不会修改 v0.7 RC2、Chrome Native Host、用户配对或上传事务**。安装前需要 Go/Swift 构建环境；此为开发预览，不是 Developer ID 签名/公证后的正式发行程序。
+
+## macOS 普通用户绿色运行、无 Developer ID 安装包（v0.8 P0）
+
+本版优先交付 **解压即运行的便携 .app**，不要求管理员账户、管理员密码、安装到 `/Applications`、`sudo`、`.pkg`、MDM、Developer ID 证书、Apple 公证或目标机器安装 Xcode/Swift/Go。开发机运行 `scripts/package-taskcenter-macos-v08.sh`，分别生成 Apple Silicon ARM64 与 Intel AMD64 两份 ZIP；包内 `CloudFileTaskCenter.app` 自带 AppKit GUI 和 Go TaskCenter CLI，并提供 `start-taskcenter.command`。
+
+**默认操作**：把 ZIP 解压到自己有写权限的目录（如 Downloads/用户文件夹），双击 `CloudFileTaskCenter.app`。如果 Dock/Finder 无法正常唤起，可从 Terminal 在解压目录使用 `bash ./start-taskcenter.command`。菜单栏是主要入口，Dock 和独立窗口是后备入口；均不需要管理员权限。无需运行 `install-taskcenter-macos-v08.sh install`，那个命令用于开发机从源码构建和可选用户级 LaunchAgent，不能当作绿色运行前提。
+
+**系统安全边界**：本绿色预览包没有 Developer ID 发行签名或公证；Apple Silicon 编译器可能添加本地 ad-hoc 签名，它不等于开发者身份签名。如果包是通过浏览器下载的，macOS Gatekeeper 可能阻止首次打开或要求用户在 Finder／“系统设置 → 隐私与安全性”中明确授权可信来源；这是操作系统行为，不能保证所有企业管控的设备都会允许未签名应用。不自动清除隔离属性、不全局关闭 Gatekeeper、不绕过 MDM 或软件白名单；拒绝后只报告限制，其他已获许可的 CloudFile 使用不应被阻断。
+
+任务中心绿色包不包含 v0.7 的设备配对、原生 Chrome Host 和上传引擎；需要这些能力的使用者仍须沿用允许的 v0.7 Agent 环境。当前 macOS 绿色包仅完成源码编译和 ZIP 检查，**尚未以非管理员账户在真实目标系统验收首开安全提示、菜单栏、Dock、轻提示和持续续租**。

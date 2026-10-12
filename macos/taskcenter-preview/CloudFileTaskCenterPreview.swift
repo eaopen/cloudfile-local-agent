@@ -91,7 +91,10 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // Menu-bar entry remains the primary interaction; Dock provides a
+        // secondary entry when the menu bar icon is concealed/managed.
+        // Neither entry needs administrator permissions or an installer.
+        NSApp.setActivationPolicy(.regular)
         listWindow.title = "CloudFile 任务中心（本地预览）"
         listWindow.minSize = NSSize(width: 370, height: 260)
         listWindow.center()
@@ -127,7 +130,7 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
         menu.addItem(exit)
         item.menu = menu
         status = item
-
+        listWindow.makeKeyAndOrderFront(nil)
         refreshTasks()
         startWatcher()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -406,11 +409,29 @@ final class TaskCenterPreview: NSObject, NSApplicationDelegate {
 }
 
 let arguments = CommandLine.arguments
-guard (arguments.count == 3 || arguments.count == 5),
-      arguments[1] == "--taskcenter-bin", arguments[2].hasPrefix("/"),
-      (arguments.count == 3 || (arguments[3] == "--go-core-bin" &&
-                                arguments[4].hasPrefix("/"))) else {
-    fputs("Usage: CloudFileTaskCenterPreview --taskcenter-bin /absolute/path/to/cloudfile-taskcenter\n", stderr)
+// A portable unsigned .app can be opened directly in Finder without passing
+// command-line arguments. Its companion Go CLI is inside Contents/MacOS.
+// Explicit --taskcenter-bin remains available for development and recovery.
+let embeddedBinary = Bundle.main.executableURL?.deletingLastPathComponent()
+    .appendingPathComponent("cloudfile-taskcenter")
+let defaultBinary = embeddedBinary?.path ?? ""
+let targetBinary: String
+let originalCore: String?
+if arguments.count == 1 {
+    targetBinary = defaultBinary
+    originalCore = nil
+} else if (arguments.count == 3 || arguments.count == 5) &&
+          arguments[1] == "--taskcenter-bin" && arguments[2].hasPrefix("/") &&
+          (arguments.count == 3 || (arguments[3] == "--go-core-bin" &&
+                                     arguments[4].hasPrefix("/"))) {
+    targetBinary = arguments[2]
+    originalCore = arguments.count == 5 ? arguments[4] : nil
+} else {
+    fputs("Usage: CloudFileTaskCenterPreview [--taskcenter-bin /absolute/path/to/cloudfile-taskcenter [--go-core-bin /absolute/path/to/installed-core]]\n", stderr)
+    exit(2)
+}
+guard FileManager.default.isExecutableFile(atPath: targetBinary) else {
+    fputs("CloudFile portable TaskCenter companion is unavailable; keep the .app bundle intact.\n", stderr)
     exit(2)
 }
 let lockDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -424,7 +445,7 @@ guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
     exit(1)
 }
 let app = NSApplication.shared
-let delegate = TaskCenterPreview(binary: URL(fileURLWithPath: arguments[2]),
-    core: arguments.count == 5 ? arguments[4] : nil)
+let delegate = TaskCenterPreview(binary: URL(fileURLWithPath: targetBinary),
+    core: originalCore)
 app.delegate = delegate
 app.run()
