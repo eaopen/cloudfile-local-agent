@@ -1,7 +1,10 @@
 package main
 
 import (
+	"time"
+
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
+	"github.com/eaopen/cloudfile-local-agent/internal/launch"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
 )
 
@@ -28,5 +31,13 @@ func registerPairedMacTask(instance, deviceID, sessionID, mode, baseFileID, copy
 		Instance: instance, DeviceID: deviceID, SessionID: sessionID,
 		Mode: mode, BaseFileID: baseFileID, WorkingCopy: copy,
 	})
+	if err == nil && !store.ResidentOnline(time.Now()) {
+		// A previously opened portable .app can be discovered through the
+		// current user's Launch Services (without admin or extra Host).
+		// If it is not registered/allowed by Gatekeeper, editing stays usable.
+		// -g explicitly avoids stealing focus while Office/CAD starts.
+		_ = launch.Detached("/usr/bin/open", "-g", "-b",
+			"com.cloudfile.taskcenter.v08.preview")
+	}
 	return err
 }
