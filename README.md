@@ -19,7 +19,7 @@ go build -trimpath -ldflags="-s -w" -o dist/cloudfile-local-agent ./cmd/cloudfil
 ./dist/cloudfile-local-agent --allow-origin https://cloudfile.example
 ```
 
-Windows 绿色包用 `scripts/register-windows.ps1` 写入当前用户的 Native Messaging Host 注册表项；Agent 是无需安装运行时的单文件程序，不需要管理员权限，也不开放 localhost HTTP 服务。将包放在当前用户可写的固定目录即可，不必写入 Program Files 或注册系统服务。
+Windows 使用 `eap-cloudfile/agent` 构建的 .NET + Go 统一绿色包，由包内 `scripts/register-native-host.ps1` 注册唯一 Host；本仓库 dev 的独立 Windows Go 安装脚本已停用。macOS 使用 `scripts/register-agent2-macos.sh`。均无需管理员权限或预装运行时，不开放 localhost HTTP 服务。
 
 ## 本地查看与编辑规则
 
@@ -127,3 +127,64 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 `SessionHTTPTransport` 已适配原生 OIDC 的 Checkout、人工上传、状态查询、受控下载、心跳、Resume 和 Abandon；它要求受信已认证的 host client。设备授权 broker 尚未接线，旧 v2 runner 不注册这些能力，Claim 仍拒绝 writeback，不传递浏览器 Cookie。
 
 本地 HTTPS 测试覆盖 multipart、响应断连后的历史查询、不重复提交、无内容 Checkin 和工作副本保留；测试服务的身份/发布为夹具。Seafile 原生服务闭环已另行验收，不能代替浏览器 OIDC → Agent 产品联调。Go 测试、go vet、race 与 Windows amd64 交叉编译通过；Office/DWG/NX 实机保存行为未验收。自动上传、多文件工程及未验收的软件路径均不开放。
+
+## v0.7 块级增量上传底座（2026-10-11 开发中，未接线/未发布）
+
+`internal/blockdelta/` 新增 **纯 Go Seafile 兼容 CDC**（6–10 MiB、平均 8 MiB，48 字节 Rabin 窗口）：生成有序块 ID、块大小/偏移、Seafile v1 file ID 和 SHA-256；只读取已冻结单文件快照。与独立 Seafile C 参考数据的指纹、切块边界、块 SHA-1、元数据 File ID 和内容 SHA-256 已逐项对齐。
+
+`StageSnapshotOnly` 根据可信服务端返回的缺失块列表，仅上传缺失 raw-blocks；拒绝未知/重复 ID、源内容变化及上传失败。HTTPS adapter 要求已配对同源的短时 `upload-raw-blks-api` URL、TLS 验证和严格响应，不允许重定向；在测试 TLS 服务中验证了分块发送。**本模块只暂存原始块，绝不会发布云端版本、取消独占或绕过 Server Barrier。**
+
+**尚未完成**：CloudFile 设备 Broker 对接真实 scoped 缺失块授权、原生受控 `CommitBlocks`（块完整性、guard、intent、base version 与同一原生事务回执）、大文件 DEV 端到端实测以及 Windows 真实绿色包测试。本模块未由旧 CLI/Native Host/普通保存行为触发，不能宣称增量上传现已面向用户可用。
+
+**明确不包含文件增量下载**：Agent/Agent2 本地查看与本地打开继续受控完整下载，不做下载块缓存、版本块重建或下载差异比较。大文件增量上传也只能由用户明确选择提交，不能后台静默提交。
+
+独立检查：`go test -count=1 ./internal/blockdelta`；全部 Go 用例：`go test ./...`。
+
+## v0.7 本地独占文件人工提交（2026-10-11 开发中）
+
+`internal/editing/manual.go` 提供 `ManualSubmitter`：只接受当前用户**明确确认**的一次独占编辑提交；读取已经领取的 Checkout/guard 状态，创建不可变快照（当前完整文件模式上限 128 MiB），沿用已有 `Workflow.CommitCaptured` 把 `intent_id` 先持久化，再走 `Transport.Publish`。普通 Commit 继续保留占用；明确选择完成时可提交并 Checkin。结果未知时保留唯一工作副本/快照及原 intent，必须明确选择恢复；不使用普通 Seafile `update-api` 降级。
+
+**为未来自动上传预留**：业务提交执行层与触发来源分离，未来可以在重新确认授权模型后，由可选保存检测触发同一 Workflow；本阶段只允许 `SubmitManual` 且 `UserConfirmed=true`。不能把“本地检测到保存”当作当前许可；不自动提交或自动 Checkin。
+
+**未完成的产品接线**：CloudFile Hub `editing/v1/commit-file` 仍要求浏览器 OIDC/CSRF 会话，设备签名 Broker 只支持当前本地领取/读取操作，尚不提供受信写入票据。Windows .NET Native Host / Go CLI 尚未把人工提交按钮及已验证设备授权绑定到 `ManualSubmitter`。**不要把浏览器 Cookie 交给 Agent，不要把此库测试声称为真实远端产品上传成功。** 独占编辑仍默认关闭。原生受控块清单 `CommitBlocks` 也尚未接线。
+
+修复 1.0.1 最新 `dev` 源码缺失的 `internal/home`、`internal/workspace`、`internal/launch`、更新模块 API 及 `config` 平台根目录适配，使整个 Go CLI 恢复编译；这些修复需继续在受控 Windows 真实用户环境验证安装/扩展更新和版本切换。
+
+## Agent2 2.0.1 双平台开发线与 Host 隔离（2026-10-11）
+
+- **共用 `dev`**：Agent2 Go 2.0.1 同时构建 macOS arm64 与 Windows amd64；平台差异通过 Go build tags/平台适配处理，不再拆成 Windows/Mac 两条开发分支。
+- **macOS 主程序**：Go Agent2 2.0.1 Native Host `com.cloudfile.agent2`。使用 `scripts/register-agent2-macos.sh` 在当前用户 Chrome Profile 注册，Go 直接负责现有本地查看/编辑等可用能力。独占编辑还需设备写授权和用户操作入口，不能提前声明。
+- **Windows 过渡**：现有 .NET Agent1 1.x（Host `com.cloudfile.current_agent`）仍为主 UI/本地打开/用户密钥能力；Go Agent2 2.0.1 随 Windows 统一包安装，作为 **.NET Host 的内部子进程组件**逐步承载新增业务；不注册第二个 Host。唯一入口 `com.cloudfile.current_agent` 未来切换 Go 主控时不改名。当前只有 Go 内部提交执行器、暂存模块，浏览器**不发布未接线的独占能力**。日后 Go 主控、.NET 仅作薄原生能力适配，无需新开发分支。
+- **旧 Go 1.x**：`com.cloudfile.local_agent` 仅供兼容老会话。本版 Go2 的配置存放 `CloudFileAgent2` 用户目录，与旧 Go 1.x 的 `CloudFileLocal` 分离，避免工作副本和升级源互相覆盖。
+- **浏览器插件 1.0.1**：Windows 固定连接 `com.cloudfile.current_agent`；macOS/Linux 优先 Go2，仅在 Go2 不存在时兼容旧 Go1。已发出的操作失败后不跨 Host 重试，未接通的独占产品能力保持关闭。
+- **发行**：Windows 使用单 Host、四个 EXE 的统一离线 ZIP；macOS 使用 Go 原生双架构离线 ZIP。均按当前用户权限安装/注册，支持用户目录运行；签名发行和真实桌面端到端验收仍待完成。
+
+## Windows 1.2.1 / macOS 2.0.1：Device Commit Broker 接线进展
+
+对外发布口径：原 Windows Agent1 `agent1` 分支维护 **1.0.0–1.1.x**；新 Windows `dev` 从 **1.2.1** 起（.NET UI/CNG + **内部 Go Core 2.0.1**）；macOS Go `dev` 从 **2.0.1** 起，未来 Windows Go 主控后再升 2.x 对齐。当前 Go 可执行文件均为 Go Core 2.0.1，不等于 Windows 整体对外版本为 2.x。
+
+`internal/editing/device_commit_proof.go` 复用 CloudFile 服务端 Canonical P-256 Proof；`device_bridge_windows.go` 调用 Windows Agent `.NET Bridge 1.2.1` 既有 CNG 密钥；`device_commit_broker.go` 经同源 HTTPS 发起 `commit-challenge`、签名并执行 `commit-authorize`，只接收持久 `prepared` 意图；`device_bound_transport.go` 通过统一 `Workflow` 把 Broker PREPARE 与独立 Native Publisher 分离，**缺 Native Publisher 则拒绝创建完整提交 transport**。已有测试覆盖 HTTP 提交、签名绑定、错误挑战、未知回包、禁止无权限上报。
+
+**当前边界**：设备上传客户端、Hub 上传授权/回执查询、Native Branch 原子发布和 macOS Keychain 签名适配已实现；本地手动上传 CLI 要求既有 Checkout Journal。桌面配对、Checkout/下载/Journal 初始化及 Commit/Checkin 完整交互仍待接线。功能默认关闭，不回退普通 Seafile `update-api`。
+
+### Device Broker 测试补强（2026-10-11）
+
+`internal/editing/device_manual_recovery_test.go` 从真实 TLS mock challenge/authorize 一直覆盖到本地人工快照、Journal、模拟原生发布后丢回包和查询原 `intent_id` 恢复；不重复发布、不动用户后来修改的工作副本。Go `device_commit_proof_test.go` 使用 Hub/Python 独立得出的 SHA256 golden，和 Windows .NET 的 `DeviceProofTests` 校验完全相同的 Challenge bytes。三方签名格式一致；已补服务器设备发布实现，上线前仍须真实 E2E。
+
+### Windows 1.2.1 一体化发行与安全路由（2026-10-11）
+
+`eap-cloudfile/agent/scripts/package-windows.sh` 将 .NET NativeHost、GUI、CNG Bridge 和 Go Core 2.0.1 编入同一 Windows x64 ZIP。GUI 通过固定包目录与受限 `--component` 协议查询 Go 能力；独占产品能力仍报告关闭，完整提交复用 Go `ManualSubmitter`，不重复实现 .NET 业务状态机。
+
+Go 组件须显式配置 `allowed_origins` 才能处理服务器会话。Windows 浏览器始终使用唯一 .NET Host；组合包注册脚本统一管理版本切换和回退，不再由独立 Go 注册脚本接管。
+
+### Windows 内部组件与 macOS 区别
+
+Windows 1.2.1 用 `eap-cloudfile/agent/scripts/register-native-host.ps1` 安装、回退及卸载完整包；dev 的旧 `register-windows.ps1` 与 `register-agent2-windows.ps1` 已停用，不再写注册表。Go `--component` 仅处理单个有预算的 JSON 请求，不允许组件自行升级/注册、任意会话文件或未经接线的提交操作。原 Go CLI、macOS `register-agent2-macos.sh` 与配置目录保持原行为。`--editing-capabilities` 仍可用于独立诊断，Windows GUI 已改为受限 JSON 协议。
+
+内部 IPC 请求格式为 `{"ipc_version":1,"request":{"type":"capabilities"}}`，响应带同版本号、`ok` 与 `result` 或受限 `error_code`。GUI/Host 不再精确绑定 Go 补丁版本，兼容性由 Core 主版本及 IPC/Journal 版本决定；发布包另外锁定实际组件版本和哈希。
+
+Go 编辑基础设施新增 `SessionWorker`：以操作系统文件锁排斥同一会话的并发进程；Windows 还持有与安装器一致的活动句柄，阻止编辑中切换版本。Journal schema 1 保留最近一次经 Workflow 核验的 published 回执，读取兼容旧 schema 0，拒绝未知 schema；状态输出不包含 token 或快照路径。`editing_status` 从用户配置目录 `CloudFileAgent2/editing/<session_id>/journal.json` 查询指定 Intent，只能由内部调用方使用。服务端设备发布和本地上传 CLI 已实现，真实部署及 Commit/Checkin GUI 尚未验收，不把这些基础组件宣称为已交付的独占保存。
+
+macOS 独立安装、Keychain 配对、签名更新与当前能力边界见 [macOS 实现说明](docs/macos.md)。
+
+设备独占上传实现及尚未开放的产品契约见 [设备上传契约](docs/device-upload-contract.md)。两端仅分发离线完整 ZIP，安装/注册无需管理员权限。

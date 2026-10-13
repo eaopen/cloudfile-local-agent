@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-11",
+  "branch": "dev",
+  "complete_product": false,
+  "artifacts": [
+    {
+      "path": "/Users/bobo/workspace/openfile/cloudfile-local-agent/dist/cloudfile-agent2-2.0.1-macos-arm64.zip",
+      "sha256": "6d9d0467353956149bc12a74a6aebc1df3edbe8a8bdcee76629bedc78ab83bab",
+      "size": 6103392,
+      "architecture": "arm64",
+      "signature": "ad-hoc development"
+    },
+    {
+      "path": "/Users/bobo/workspace/openfile/cloudfile-local-agent/dist/cloudfile-agent2-2.0.1-macos-amd64.zip",
+      "sha256": "c613199e6dd8aca8414b9f1ea3db6df64d617776cf27e69300183ce90daca969",
+      "size": 6795970,
+      "architecture": "x86_64",
+      "signature": "ad-hoc development"
+    }
+  ],
+  "verified": [
+    "go test ./...",
+    "go vet ./...",
+    "race: device/editing/update",
+    "real temporary Keychain create/reopen/sign/verify/delete",
+    "local pairing with synthetic browser responses and real Keychain",
+    "isolated macOS install/native framing/reinstall/rollback/foreign registration refusal",
+    "unpinned update fails closed",
+    "signed release mismatch/expiry/platform/protocol/origin denial",
+    "detached worker survives launcher exit",
+    "Windows cross build",
+    "portable install/unregister preserves executable and user data",
+    "device upload TLS contract: immutable snapshot and original-intent lost-reply recovery",
+    "device upload rejects invalid native grant before sending bytes",
+    "local manual upload CLI gates and browser path-nomination refusal",
+    "server implementation and isolated SQL evidence in docs/device-upload-evidence-2026-10-11.json"
+  ],
+  "not_verified_or_missing": [
+    "production browser/server pairing",
+    "device open_uri runtime",
+    "pairing GUI",
+    "deployed native publisher E2E and full desktop Commit/Checkin workflow",
+    "Intel physical machine",
+    "Developer ID signing and Apple notarization",
+    "production update feed and signing key"
+  ]
+}

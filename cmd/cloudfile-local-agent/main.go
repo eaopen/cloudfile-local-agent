@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
@@ -19,17 +18,34 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/nativehost"
 	"github.com/eaopen/cloudfile-local-agent/internal/runner"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
+	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
 	"github.com/eaopen/cloudfile-local-agent/internal/update"
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "1.0.1"
+const version = "2.0.3"
 
 func main() {
+	inspectLocal := flag.Bool("inspect-local-task-stdin", false, "private same-user local task info for the original desktop controller")
+	manageLocal := flag.Bool("manage-local-task-stdin", false, "macOS only: user-selected original local edit controller")
+	indexSession := flag.Bool("index-local-session-stdin", false, "local task index only; no editing or authorization")
+	optimisticUpload := flag.Bool("optimistic-upload-stdin", false, "explicit one-shot paired-device optimistic local file upload")
+	editUpload := flag.Bool("edit-upload-stdin", false, "explicit manual upload/recovery from a local controller descriptor")
+	checkoutInit := flag.Bool("init-checkout-stdin", false, "initialize a signed device Checkout with a durable journal")
+	checkoutInspect := flag.Bool("inspect-checkout-stdin", false, "inspect one local pending intent without secret output")
+	checkoutRenew := flag.Bool("renew-checkout-stdin", false, "renew one active device Checkout without upload")
+	pairingAction := flag.String("pairing", "", "macOS local enrollment: start, sign, confirm, cancel")
+	pairingInstance := flag.String("pairing-instance", "", "explicit HTTPS instance for enrollment")
+	pairingAlias := flag.String("pairing-key", "", "local pending enrollment key alias")
+	component := flag.Bool("component", false, "serve one bounded internal component JSON request")
 	nativeHost := flag.Bool("native-host", false, "serve Chrome Native Messaging")
+	showVersion := flag.Bool("version", false, "print Agent2 version")
+	editingCapabilities := flag.Bool("editing-capabilities", false, "report supported local editing stages, without credentials")
 	runSession := flag.String("run-session", "", "run one CloudFile session file")
+	openURIStdin := flag.Bool("open-uri-stdin", false, "open one paired URI from local pipe")
 	runSessionStdin := flag.Bool("run-session-stdin", false, "run one CloudFile session descriptor from stdin")
 	allowOrigin := flag.String("allow-origin", "", "trust one CloudFile server origin")
+	setUpdateKey := flag.String("set-update-key", "", "pin a local P-256 release public PEM file")
 	setUpdateSource := flag.String("set-update-source", "", "record the static update.json URL")
 	showConfig := flag.Bool("show-config", false, "print local configuration")
 	validateConfig := flag.Bool("validate-config", false, "validate local configuration")
@@ -37,9 +53,133 @@ func main() {
 	applyUpdate := flag.Bool("update", false, "check, download and install the latest update")
 	updateExtension := flag.Bool("update-extension", false, "download and install the latest extension package")
 	flag.Parse()
+	if *inspectLocal {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("private task inspection accepts stdin only"))
+		}
+		if err := runInspectLocalTask(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *manageLocal {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("local user action accepts stdin only"))
+		}
+		if err := runManageLocalTask(os.Stdin); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *indexSession {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("local task indexing accepts only stdin"))
+		}
+		if err := indexLocalSession(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *checkoutRenew {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("Checkout renewal accepts only local stdin"))
+		}
+		if err := runCheckoutRenew(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *checkoutInspect {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("checkout inspection accepts only local stdin"))
+		}
+		if err := runCheckoutInspect(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *checkoutInit {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("checkout initialization accepts only local stdin"))
+		}
+		if err := runCheckoutInit(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *optimisticUpload {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("optimistic upload requires a single local stdin request"))
+		}
+		if err := runOptimisticUpload(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *editUpload {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("edit upload accepts only local stdin"))
+		}
+		if err := runEditUpload(os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *pairingAction != "" {
+		if flag.NFlag() != 2 || flag.NArg() != 0 {
+			fail(fmt.Errorf("pairing requires exactly action and instance or key"))
+		}
+		if err := runPairing(*pairingAction, *pairingInstance, *pairingAlias); err != nil {
+			fail(err)
+		}
+		return
+	}
 
+	if *component {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			os.Exit(1)
+		}
+		if err := serveComponent(os.Stdin, os.Stdout); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+	if *editingCapabilities {
+		data, err := json.Marshal(map[string]any{
+			"family": "agent2", "core_version": version, "platform": runtime.GOOS,
+			"manual_submit_core": true, "device_signed_prepare": true,
+			"native_device_publish": false, "automatic_upload": false,
+		})
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
+		return
+	}
 	if *allowOrigin != "" {
 		if _, err := config.AddOrigin(*allowOrigin); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *setUpdateKey != "" {
+		data, err := os.ReadFile(*setUpdateKey)
+		if err != nil {
+			fail(err)
+		}
+		if _, err := update.PublicKey(string(data)); err != nil {
+			fail(err)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			fail(err)
+		}
+		cfg.UpdatePublicKey = string(data)
+		if err := config.Save(cfg); err != nil {
 			fail(err)
 		}
 		return
@@ -70,6 +210,15 @@ func main() {
 		}
 		return
 	}
+	if *openURIStdin {
+		if flag.NFlag() != 1 || flag.NArg() != 0 {
+			fail(fmt.Errorf("fixed paired URI pipe required"))
+		}
+		if err := runOpenURIFromStdin(); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *runSessionStdin {
 		if err := runSessionFromStdin(); err != nil {
 			fail(err)
@@ -77,17 +226,29 @@ func main() {
 		return
 	}
 	if *checkUpdate || *applyUpdate {
+		if *applyUpdate {
+			recordUpdateResult("agent", "running")
+		}
 		if err := runUpdate(*applyUpdate); err != nil {
+			if *applyUpdate {
+				recordUpdateResult("agent", "failed")
+			}
 			logUpdate("agent update failed: %v", err)
 			fail(err)
+		}
+		if *applyUpdate {
+			recordUpdateResult("agent", "completed")
 		}
 		return
 	}
 	if *updateExtension {
+		recordUpdateResult("extension", "running")
 		if err := runUpdateExtension(); err != nil {
+			recordUpdateResult("extension", "failed")
 			logUpdate("extension update failed: %v", err)
 			fail(err)
 		}
+		recordUpdateResult("extension", "completed")
 		return
 	}
 	if *nativeHost || flag.NFlag() == 0 {
@@ -102,12 +263,33 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Upgrade with --check-update / --update / --update-extension.")
 }
 
+// Windows bundles Go as an internal child of the single .NET Host.
+// Do not advertise network session actions before an explicit trusted origin
+// exists. The controller delegates only advertised operations.
+func advertisedCapabilities(trustedOrigins []string) []string {
+	operations := []string{"check_update"}
+	// The macOS Agent2 Host advertises a gated URI receiver. It never grants
+	// access without a confirmed local Keychain pairing and a live one-use
+	// server claim, verified only by the receiver worker.
+	if runtime.GOOS == "darwin" {
+		operations = append(operations, "open_uri")
+	}
+	if len(trustedOrigins) != 0 {
+		operations = append(operations, "open_session", "open_session_file",
+			"query_local_file", "query_local_folder", "open_workspace")
+	}
+	return operations
+}
+
 func handleNativeMessage(request nativehost.Request) nativehost.Response {
 	switch request.Type {
 	case "status":
 		response := nativehost.Response{
 			OK:           true,
 			Version:      version,
+			AgentFamily:  "agent2",
+			Platform:     runtime.GOOS,
+			Capabilities: advertisedCapabilities(nil),
 			Applications: appfinder.Names(),
 		}
 		// 回传自身可执行文件路径，供扩展 popup 拼出「可直接复制运行」的升级命令。
@@ -115,14 +297,81 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			response.ExecutablePath = executable
 		}
 		if agentConfig, err := config.Load(); err == nil {
-			if root, err := workspace.Resolve(agentConfig); err == nil {
-				response.WorkspaceRoot = root
-				response.CanOpenWorkspace = true
+			if len(agentConfig.AllowedOrigins) > 0 {
+				// A newly installed internal Windows Go component MUST NOT take
+				// over an existing session until its trusted CloudFile origin is
+				// configured. Chrome routes by capabilities, not installation.
+				response.Capabilities = advertisedCapabilities(agentConfig.AllowedOrigins)
+				if root, err := workspace.Resolve(agentConfig); err == nil {
+					response.WorkspaceRoot = root
+					response.CanOpenWorkspace = true
+				}
 			}
 			describeAgentUpdate(agentConfig, &response)
 			describeExtensionUpdate(agentConfig, &response)
+			// macOS Go is the registered Chrome Host; Windows retains .NET.
+			if runtime.GOOS == "darwin" {
+				if root, err := agentConfig.Root(); err == nil {
+					if store, err := taskcenter.New(root); err == nil {
+						if _, err := store.List(); err == nil {
+							response.Capabilities = append(response.Capabilities, "task_summary")
+							if store.ResidentOnline(time.Now()) {
+								response.Capabilities = append(response.Capabilities, "focus_task")
+							}
+						}
+					}
+				}
+			}
 		}
 		return response
+	case "focus_task":
+		if !request.Valid() || runtime.GOOS != "darwin" {
+			return nativehost.Response{Error: "invalid local focus request"}
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return nativehost.Response{Error: "local task configuration unavailable"}
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nativehost.Response{Error: "local task workspace unavailable"}
+		}
+		store, err := taskcenter.New(root)
+		if err != nil || store.RequestFocus(request.TaskID, time.Now()) != nil {
+			return nativehost.Response{Error: "task is not active in the local TaskCenter"}
+		}
+		return nativehost.Response{OK: true}
+	case "task_summary":
+		if !request.Valid() || runtime.GOOS != "darwin" {
+			return nativehost.Response{Error: "local task summary unsupported"}
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return nativehost.Response{Error: "local task configuration unavailable"}
+		}
+		root, err := cfg.Root()
+		if err != nil {
+			return nativehost.Response{Error: "local task workspace unavailable"}
+		}
+		store, err := taskcenter.New(root)
+		if err != nil {
+			return nativehost.Response{Error: "local task index unavailable"}
+		}
+		tasks, err := store.List()
+		if err != nil {
+			return nativehost.Response{Error: "local task recovery requires attention"}
+		}
+		result := make([]nativehost.TaskSummary, 0, len(tasks))
+		for _, t := range tasks {
+			if len(result) >= 50 {
+				break
+			}
+			result = append(result, nativehost.TaskSummary{
+				ID: t.ID, FileName: t.FileName, Mode: t.Mode,
+				Changed: t.LocalChanged, NeedsReview: t.NeedsReview,
+			})
+		}
+		return nativehost.Response{OK: true, Tasks: result}
 	case "check_update":
 		// 轻量更新探测：只回报版本与门禁状态，不附加应用清单/工作区等全量字段。
 		// 扩展后台每 6 小时轮询它，用来点亮角标与弹系统通知。
@@ -143,13 +392,23 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		}
 		// 以子进程方式运行自身的 --update：它只下载新版本并改写 native host
 		// manifest 的 path，不覆盖正在运行的二进制，所以立即返回、由子进程在后台完成。
-		return spawnSelf("--update")
+		recordUpdateResult("agent", "running")
+		result := spawnSelf("--update")
+		if !result.OK {
+			recordUpdateResult("agent", "failed")
+		}
+		return result
 	case "update_extension":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid update_extension request"}
 		}
 		// 同理：下载并解压扩展包，落盘后由扩展自己 chrome.runtime.reload() 生效。
-		return spawnSelf("--update-extension")
+		recordUpdateResult("extension", "running")
+		result := spawnSelf("--update-extension")
+		if !result.OK {
+			recordUpdateResult("extension", "failed")
+		}
+		return result
 	case "open_workspace":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid open_workspace request"}
@@ -276,6 +535,18 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			exists = true
 		}
 		return nativehost.Response{OK: true, Mode: mode, LocalExists: exists, LocalPath: dir}
+	case "open_uri":
+		if runtime.GOOS != "darwin" || !request.Valid() {
+			return nativehost.Response{Error: "macOS paired URI required"}
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return nativehost.Response{Error: "installed local Agent unavailable"}
+		}
+		if err = launch.WithInput(executable, []byte(request.URI), "--open-uri-stdin"); err != nil {
+			return nativehost.Response{Error: "local session controller unavailable"}
+		}
+		return nativehost.Response{OK: true}
 	case "open_session_file":
 		if !request.Valid() {
 			return nativehost.Response{Error: "invalid session file path"}
@@ -284,10 +555,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: "cannot start local agent"}
 		}
-		command := exec.Command(executable, "--run-session", request.Path)
-		command.Stdout = nil
-		command.Stderr = os.Stderr
-		if err := command.Start(); err != nil {
+		if err := launch.Detached(executable, "--run-session", request.Path); err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
 		return nativehost.Response{OK: true}
@@ -310,11 +578,7 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		if err != nil {
 			return nativehost.Response{Error: "cannot start local agent"}
 		}
-		command := exec.Command(executable, "--run-session-stdin")
-		command.Stdin = strings.NewReader(string(data))
-		command.Stdout = nil
-		command.Stderr = os.Stderr
-		if err := command.Start(); err != nil {
+		if err := launch.WithInput(executable, data, "--run-session-stdin"); err != nil {
 			return nativehost.Response{Error: err.Error()}
 		}
 		return nativehost.Response{OK: true}
@@ -377,7 +641,7 @@ func runUpdate(apply bool) error {
 	if agentConfig.UpdateSource == "" {
 		return fmt.Errorf("update source is not configured (set update_source in config.json)")
 	}
-	manifest, err := update.Fetch(agentConfig.UpdateSource)
+	manifest, err := fetchAgentRelease(agentConfig, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -422,7 +686,7 @@ func runUpdateExtension() error {
 	if err != nil {
 		return err
 	}
-	manifest, err := update.FetchExtension(source)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		return err
 	}
@@ -448,7 +712,7 @@ func runUpdateExtension() error {
 // printExtensionStatus reports the extension's update situation for
 // --check-update, so a field engineer can see both sides from one command.
 func printExtensionStatus(agentConfig config.Config) {
-	manifest, err := update.FetchExtensionCached(agentConfig.UpdateSource, update.ExtensionCacheTTL)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		fmt.Printf("extension: manifest unavailable (%v)\n", err)
 		return
@@ -470,11 +734,12 @@ func printExtensionStatus(agentConfig config.Config) {
 // advertise a version it cannot actually install. Nothing is ever refused
 // because of a version comparison — an available update is only a prompt.
 func describeAgentUpdate(agentConfig config.Config, response *nativehost.Response) {
+	describeUpdateResult(response)
 	response.UpdateSourceSet = agentConfig.UpdateSource != ""
 	if agentConfig.UpdateSource == "" {
 		return
 	}
-	manifest, err := update.FetchCached(agentConfig.UpdateSource, update.CacheTTL)
+	manifest, err := fetchAgentRelease(agentConfig, 2*time.Second)
 	if err != nil {
 		return
 	}
@@ -496,7 +761,7 @@ func describeExtensionUpdate(agentConfig config.Config, response *nativehost.Res
 	if agentConfig.UpdateSource == "" {
 		return
 	}
-	manifest, err := update.FetchExtensionCached(agentConfig.UpdateSource, update.ExtensionCacheTTL)
+	manifest, err := fetchExtensionRelease(agentConfig)
 	if err != nil {
 		return
 	}
@@ -553,4 +818,27 @@ func logUpdate(format string, args ...any) {
 	}
 	defer file.Close()
 	fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+// macOS releases require a locally pinned signing key. Windows uses its .NET
+// bundle updater; legacy Unix compatibility is kept separate.
+func fetchAgentRelease(cfg config.Config, timeout time.Duration) (*update.Manifest, error) {
+	if runtime.GOOS == "darwin" {
+		return update.FetchSigned(cfg.UpdateSource, cfg.UpdatePublicKey, timeout)
+	}
+	return update.FetchCached(cfg.UpdateSource, update.CacheTTL)
+}
+
+func fetchExtensionRelease(cfg config.Config) (*update.ExtensionManifest, error) {
+	if runtime.GOOS == "darwin" {
+		release, err := fetchAgentRelease(cfg, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if release.Extension == nil {
+			return nil, fmt.Errorf("signed extension artifact unavailable")
+		}
+		return release.Extension, nil
+	}
+	return update.FetchExtensionCached(cfg.UpdateSource, update.ExtensionCacheTTL)
 }

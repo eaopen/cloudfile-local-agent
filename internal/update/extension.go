@@ -5,372 +5,253 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/eaopen/cloudfile-local-agent/internal/home"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/eaopen/cloudfile-local-agent/internal/home"
 )
 
-// ExtensionManifest mirrors extension-update.json, which lives in the same
-// static directory as update.json. Like the agent manifest it carries no
-// min_version: an available version is a prompt, never a gate.
+// Cached version probes must not hold up Native Messaging.
+const CacheTTL = time.Minute * 3
+const ExtensionCacheTTL = time.Minute * 3
+
 type ExtensionManifest struct {
 	Version string `json:"version"`
+	ZIPURL  string `json:"zip_url"`
 	SHA256  string `json:"sha256"`
-	ZipURL  string `json:"zip_url"`
 	Notes   string `json:"notes"`
 }
 
-const (
-	// extensionManifestName is the fixed file name inside the update directory;
-	// deriving it (instead of configuring a second URL) keeps the agent's config
-	// to a single address and lets nginx move both files together.
-	extensionManifestName = "extension-update.json"
-	// maxExtensionZipBytes bounds the downloaded package. The real bundle is
-	// well under 200 KiB; the headroom covers future icon assets while still
-	// stopping a rogue source from filling the disk.
-	maxExtensionZipBytes = 32 << 20
-	// extensionManifestTimeout matches the agent manifest's: this fetch backs
-	// the extension's background polling and must return quickly when the
-	// source is unreachable.
-	extensionManifestTimeout = 4 * time.Second
-	// ExtensionCacheTTL is how long a fetched extension manifest is reused.
-	ExtensionCacheTTL = 6 * time.Hour
-)
+type cachedAgent struct {
+	manifest *Manifest
+	expires  time.Time
+}
+type cachedExtension struct {
+	manifest *ExtensionManifest
+	expires  time.Time
+}
 
-// ExtensionSourceURL derives the extension manifest URL from the agent manifest
-// URL. Both are served from the same directory, so the operator only ever
-// configures one address.
-func ExtensionSourceURL(updateSource string) (string, error) {
-	parsed, err := url.Parse(updateSource)
-	if err != nil {
-		return "", err
+var cacheLock sync.Mutex
+var cacheAgents = map[string]cachedAgent{}
+var cacheExtensions = map[string]cachedExtension{}
+
+// FetchCached never writes an update; fetching a version is informational.
+func FetchCached(source string, ttl time.Duration) (*Manifest, error) {
+	if source == "" {
+		return nil, errors.New("update source missing")
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("update source %q is not an absolute URL", updateSource)
+	cacheLock.Lock()
+	entry, exists := cacheAgents[source]
+	if exists && time.Now().Before(entry.expires) {
+		cacheLock.Unlock()
+		return entry.manifest, nil
 	}
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	trimmed := strings.TrimSuffix(parsed.Path, "/")
-	if trimmed == "" || !strings.HasSuffix(trimmed, ".json") {
-		parsed.Path = trimmed + "/" + extensionManifestName
-		return parsed.String(), nil
-	}
-	parsed.Path = path.Dir(trimmed) + "/" + extensionManifestName
-	return parsed.String(), nil
-}
-
-// ExtensionDir is the directory Chrome loads the unpacked extension from.
-// register-windows.ps1 extracts the release zip there, and the self-update
-// writes back to the same place so a runtime reload picks up the new files.
-func ExtensionDir() (string, error) {
-	return filepath.Join(home.Dir(), "extension"), nil
-}
-
-func extensionCachePath() (string, error) {
-	return filepath.Join(home.Dir(), "extension-cache.json"), nil
-}
-
-// FetchExtension retrieves extension-update.json with the long timeout used by
-// explicit user actions (--update-extension).
-func FetchExtension(source string) (*ExtensionManifest, error) {
-	return fetchExtensionWithTimeout(source, 30*time.Second)
-}
-
-// FetchExtensionCached is the polling path: bounded timeout plus a short-lived
-// local cache, so a background probe never stalls on an unreachable source.
-func FetchExtensionCached(updateSource string, ttl time.Duration) (*ExtensionManifest, error) {
-	source, err := ExtensionSourceURL(updateSource)
+	cacheLock.Unlock()
+	manifest, err := fetchWithTimeout(source, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	cachePath, err := extensionCachePath()
-	if err != nil {
-		// No writable cache dir: still fetch, just without the cache.
-		return fetchExtensionWithTimeout(source, extensionManifestTimeout)
-	}
-	return fetchExtensionCachedAt(source, ttl, cachePath)
-}
-
-func fetchExtensionCachedAt(source string, ttl time.Duration, cachePath string) (*ExtensionManifest, error) {
-	if cached, ok := readExtensionCacheAt(source, ttl, cachePath); ok {
-		return cached, nil
-	}
-	manifest, err := fetchExtensionWithTimeout(source, extensionManifestTimeout)
-	if err != nil {
-		return nil, err
-	}
-	writeExtensionCacheAt(cachePath, source, manifest)
+	cacheLock.Lock()
+	cacheAgents[source] = cachedAgent{manifest: manifest, expires: time.Now().Add(ttl)}
+	cacheLock.Unlock()
 	return manifest, nil
 }
 
-func fetchExtensionWithTimeout(source string, timeout time.Duration) (*ExtensionManifest, error) {
-	response, err := (&http.Client{Timeout: timeout}).Get(source)
+func ExtensionSourceURL(agentSource string) (string, error) {
+	u, err := url.Parse(agentSource)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", errors.New("invalid update source")
+	}
+	sibling, err := url.Parse("extension-update.json")
+	if err != nil {
+		return "", err
+	}
+	return u.ResolveReference(sibling).String(), nil
+}
+
+func FetchExtension(source string) (*ExtensionManifest, error) {
+	c := http.Client{Timeout: 20 * time.Second}
+	resp, err := c.Get(source)
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("extension update manifest unavailable (%d)", response.StatusCode)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("extension manifest HTTP %d", resp.StatusCode)
 	}
-	var manifest ExtensionManifest
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("decode extension update manifest: %w", err)
-	}
-	if manifest.Version == "" || manifest.ZipURL == "" {
-		return nil, fmt.Errorf("extension update manifest is incomplete (version/zip_url required)")
-	}
-	return &manifest, nil
-}
-
-type cachedExtensionManifest struct {
-	Source    string `json:"source"`
-	FetchedAt int64  `json:"fetched_at"`
-	Version   string `json:"version"`
-	SHA256    string `json:"sha256,omitempty"`
-	ZipURL    string `json:"zip_url,omitempty"`
-	Notes     string `json:"notes,omitempty"`
-}
-
-func (c cachedExtensionManifest) manifest() *ExtensionManifest {
-	return &ExtensionManifest{
-		Version: c.Version,
-		SHA256:  c.SHA256,
-		ZipURL:  c.ZipURL,
-		Notes:   c.Notes,
-	}
-}
-
-func readExtensionCacheAt(source string, ttl time.Duration, cachePath string) (*ExtensionManifest, bool) {
-	data, err := os.ReadFile(cachePath)
+	var m ExtensionManifest
+	err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
-	var cached cachedExtensionManifest
-	if err := json.Unmarshal(data, &cached); err != nil {
-		return nil, false
+	if m.Version == "" || m.ZIPURL == "" || m.SHA256 == "" || len(m.SHA256) != 64 {
+		return nil, errors.New("incomplete extension manifest")
 	}
-	if cached.Source != source || cached.Version == "" || cached.ZipURL == "" {
-		return nil, false
-	}
-	age := time.Since(time.Unix(cached.FetchedAt, 0))
-	if age < 0 || age > ttl {
-		return nil, false
-	}
-	return cached.manifest(), true
+	return &m, nil
 }
-
-func writeExtensionCacheAt(cachePath, source string, manifest *ExtensionManifest) {
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0700); err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(cachedExtensionManifest{
-		Source:    source,
-		FetchedAt: time.Now().Unix(),
-		Version:   manifest.Version,
-		SHA256:    manifest.SHA256,
-		ZipURL:    manifest.ZipURL,
-		Notes:     manifest.Notes,
-	}, "", "  ")
+func FetchExtensionCached(agentSource string, ttl time.Duration) (*ExtensionManifest, error) {
+	source, err := ExtensionSourceURL(agentSource)
 	if err != nil {
-		return
+		return nil, err
 	}
-	_ = os.WriteFile(cachePath, append(data, '\n'), 0600)
+	cacheLock.Lock()
+	entry, ok := cacheExtensions[source]
+	if ok && time.Now().Before(entry.expires) {
+		cacheLock.Unlock()
+		return entry.manifest, nil
+	}
+	cacheLock.Unlock()
+	m, err := FetchExtension(source)
+	if err != nil {
+		return nil, err
+	}
+	cacheLock.Lock()
+	cacheExtensions[source] = cachedExtension{manifest: m, expires: time.Now().Add(ttl)}
+	cacheLock.Unlock()
+	return m, nil
 }
 
-// InstalledExtensionVersion reports the version currently sitting on disk in
-// dir (empty when the directory holds no readable manifest). The extension
-// compares it with its own loaded version to decide when a reload is safe.
+func ExtensionDir() (string, error) {
+	return filepath.Join(home.Dir(), "extension"), nil
+}
 func InstalledExtensionVersion(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return ""
 	}
-	var manifest struct {
+	var m struct {
 		Version string `json:"version"`
 	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if json.Unmarshal(data, &m) != nil {
 		return ""
 	}
-	return manifest.Version
+	if _, err := parseVersion(m.Version); err != nil {
+		return ""
+	}
+	return m.Version
 }
 
-// ApplyExtension downloads the extension package, verifies its SHA-256 and
-// replaces the unpacked extension in dir. It returns dir.
-func ApplyExtension(source string, manifest *ExtensionManifest, dir string) (string, error) {
-	if manifest.SHA256 == "" {
-		return "", fmt.Errorf("extension update manifest has no sha256; refusing to install an unverified package")
+// ApplyExtension downloads an archive to a separate temp directory and
+// installs it without touching the running agent binary. Do not follow
+// symlinks or allow ZIP paths to escape the unpacked extension root.
+func ApplyExtension(source string, m *ExtensionManifest, dir string) (string, error) {
+	if m == nil || m.Version == "" || m.ZIPURL == "" || len(m.SHA256) != 64 || dir == "" {
+		return "", errors.New("verified update manifest required")
 	}
-	downloadURL, err := resolveDownloadURL(source, manifest.ZipURL)
+	u, err := url.Parse(source)
 	if err != nil {
 		return "", err
 	}
-	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0700); err != nil {
-		return "", err
-	}
-	staging := dir + ".staging"
-	_ = os.RemoveAll(staging)
-
-	archive, err := os.CreateTemp(parent, ".extension-*.zip")
+	destination, err := u.Parse(m.ZIPURL)
 	if err != nil {
 		return "", err
 	}
-	archivePath := archive.Name()
-	archive.Close()
-	defer os.Remove(archivePath)
-	if err := downloadToFile(downloadURL, archivePath, manifest.SHA256, maxExtensionZipBytes); err != nil {
+	target := u.ResolveReference(destination)
+	if target.Scheme != u.Scheme || target.Host != u.Host || target.User != nil || target.Fragment != "" {
+		return "", errors.New("same-origin extension source required")
+	}
+	tempParent := filepath.Dir(dir)
+	if err := os.MkdirAll(tempParent, 0700); err != nil {
 		return "", err
 	}
-	if err := extractZip(archivePath, staging); err != nil {
-		_ = os.RemoveAll(staging)
+	zipPathFile, err := os.CreateTemp(tempParent, ".cf-extension-*.zip")
+	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(staging, "manifest.json")); err != nil {
-		_ = os.RemoveAll(staging)
-		return "", fmt.Errorf("extension package is incomplete (manifest.json missing)")
-	}
-	if err := swapDirectory(staging, dir); err != nil {
-		_ = os.RemoveAll(staging)
+	zipPath := zipPathFile.Name()
+	zipPathFile.Close()
+	if err := os.Remove(zipPath); err != nil {
 		return "", err
+	}
+	defer os.Remove(zipPath)
+	if err := downloadBinary(target.String(), zipPath, m.SHA256); err != nil {
+		return "", err
+	}
+	unpack, err := os.MkdirTemp(tempParent, ".cf-extension-new-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(unpack)
+	archive, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", err
+	}
+	defer archive.Close()
+	var total int64
+	for _, item := range archive.File {
+		name := filepath.Clean(item.Name)
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) || strings.Contains(name, "\\") || item.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("invalid extension archive path")
+		}
+		path := filepath.Join(unpack, name)
+		if item.FileInfo().IsDir() {
+			if err := os.MkdirAll(path, 0700); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if !item.Mode().IsRegular() {
+			return "", errors.New("invalid extension archive member")
+		}
+		total += int64(item.UncompressedSize64)
+		if total > 256<<20 {
+			return "", errors.New("extension archive exceeds limit")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return "", err
+		}
+		source, err := item.Open()
+		if err != nil {
+			return "", err
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			source.Close()
+			return "", err
+		}
+		copied, err := io.CopyN(f, source, int64(item.UncompressedSize64)+1)
+		source.Close()
+		closeErr := f.Close()
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		if closeErr != nil || copied != int64(item.UncompressedSize64) {
+			return "", errors.New("extension archive file length mismatch")
+		}
+	}
+	if InstalledExtensionVersion(unpack) != m.Version {
+		return "", errors.New("extension archive version mismatch")
+	}
+	backup := dir + ".prior"
+	if _, err := os.Stat(backup); err == nil {
+		return "", errors.New("previous extension backup still present")
+	}
+	hadOld := false
+	if _, err := os.Stat(dir); err == nil {
+		if err := os.Rename(dir, backup); err != nil {
+			return "", err
+		}
+		hadOld = true
+	}
+	if err := os.Rename(unpack, dir); err != nil {
+		if hadOld {
+			_ = os.Rename(backup, dir)
+		}
+		return "", err
+	}
+	if hadOld {
+		_ = os.RemoveAll(backup)
 	}
 	return dir, nil
 }
 
-// swapDirectory puts staging in place of dir, keeping the previous contents
-// only long enough to remove them. Windows refuses to rename a directory whose
-// files are open, so a copy fallback covers the browser holding a handle on the
-// old files.
-func swapDirectory(staging, dir string) error {
-	if _, err := os.Stat(dir); err != nil {
-		return os.Rename(staging, dir)
-	}
-	previous := dir + ".previous"
-	_ = os.RemoveAll(previous)
-	if err := os.Rename(dir, previous); err == nil {
-		if err := os.Rename(staging, dir); err == nil {
-			_ = os.RemoveAll(previous)
-			return nil
-		}
-		// Put the old directory back so the extension stays loadable.
-		_ = os.Rename(previous, dir)
-	}
-	return copyTree(staging, dir)
-}
-
-func copyTree(from, to string) error {
-	if err := os.MkdirAll(to, 0755); err != nil {
-		return err
-	}
-	return filepath.WalkDir(from, func(current string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(from, current)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(to, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		payload, err := os.ReadFile(current)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, payload, 0644)
-	})
-}
-
-// downloadToFile streams rawURL into target, verifying wantSHA256 and refusing
-// payloads above limit bytes.
-func downloadToFile(rawURL, target, wantSHA256 string, limit int64) error {
-	response, err := (&http.Client{Timeout: 5 * time.Minute}).Get(rawURL)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed (%d): %s", response.StatusCode, rawURL)
-	}
-	hasher := sha256.New()
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".download-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	written, err := io.Copy(io.MultiWriter(temporary, hasher), io.LimitReader(response.Body, limit+1))
-	closeErr := temporary.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if written > limit {
-		return fmt.Errorf("download is too large: %s", rawURL)
-	}
-	if got := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(got, wantSHA256) {
-		return fmt.Errorf("checksum mismatch for %s", rawURL)
-	}
-	return os.Rename(temporaryPath, target)
-}
-
-// extractZip unpacks archive into dest, rejecting entries that would escape the
-// destination (zip-slip) and capping the unpacked size.
-func extractZip(archive, dest string) error {
-	reader, err := zip.OpenReader(archive)
-	if err != nil {
-		return fmt.Errorf("open extension package: %w", err)
-	}
-	defer reader.Close()
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return err
-	}
-	var total int64
-	for _, file := range reader.File {
-		name := strings.TrimPrefix(file.Name, "./")
-		if name == "" {
-			continue
-		}
-		if path.IsAbs(name) || strings.Contains(name, `\`) || strings.HasPrefix(name, "../") ||
-			strings.Contains(name, "/../") || path.Clean(name) == ".." {
-			return fmt.Errorf("extension package entry escapes the target directory: %q", file.Name)
-		}
-		target := filepath.Join(dest, filepath.FromSlash(name))
-		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		total += int64(file.UncompressedSize64)
-		if total > maxExtensionZipBytes {
-			return fmt.Errorf("extension package is too large")
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		source, err := file.Open()
-		if err != nil {
-			return err
-		}
-		payload, err := io.ReadAll(io.LimitReader(source, maxExtensionZipBytes))
-		source.Close()
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(target, payload, 0644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// Keep package-level SHA-256 reuse explicit for manifest review.
+var _ = sha256.Size
+var _ = hex.EncodeToString

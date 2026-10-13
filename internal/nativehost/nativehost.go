@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 const maxMessageBytes = 1024 * 1024
 
+var focusID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 type Request struct {
 	Type        string `json:"type"`
+	TaskID      string `json:"task_id,omitempty"`
 	Path        string `json:"path,omitempty"`
 	Protocol    string `json:"protocol,omitempty"`
 	Server      string `json:"server,omitempty"`
@@ -22,20 +26,35 @@ type Request struct {
 	RepoID      string `json:"repo_id,omitempty"`
 	Mode        string `json:"mode,omitempty"`
 	LocalAction string `json:"local_action,omitempty"`
+	URI         string `json:"uri,omitempty"`
 }
 
+// TaskSummary exposes only safe file metadata, never credentials.
+type TaskSummary struct {
+	ID          string `json:"task_id"`
+	FileName    string `json:"file_name"`
+	Mode        string `json:"mode"`
+	Changed     bool   `json:"local_changed"`
+	NeedsReview bool   `json:"needs_review"`
+}
 type Response struct {
-	OK               bool     `json:"ok"`
-	Error            string   `json:"error,omitempty"`
-	Version          string   `json:"version,omitempty"`
-	ExecutablePath   string   `json:"executable_path,omitempty"`
-	Applications     []string `json:"applications,omitempty"`
-	WorkspaceRoot    string   `json:"workspace_root,omitempty"`
-	CanOpenWorkspace bool     `json:"can_open_workspace,omitempty"`
-	UpdateAvailable  bool     `json:"update_available,omitempty"`
-	LatestVersion    string   `json:"latest_version,omitempty"`
-	LatestNotes      string   `json:"latest_notes,omitempty"`
-	UpdateSourceSet  bool     `json:"update_source_set,omitempty"`
+	LastUpdateState  string        `json:"last_update_state,omitempty"`
+	LastUpdateKind   string        `json:"last_update_kind,omitempty"`
+	OK               bool          `json:"ok"`
+	Error            string        `json:"error,omitempty"`
+	Version          string        `json:"version,omitempty"`
+	AgentFamily      string        `json:"agent_family,omitempty"`
+	Platform         string        `json:"platform,omitempty"`
+	Capabilities     []string      `json:"capabilities,omitempty"`
+	Tasks            []TaskSummary `json:"tasks,omitempty"`
+	ExecutablePath   string        `json:"executable_path,omitempty"`
+	Applications     []string      `json:"applications,omitempty"`
+	WorkspaceRoot    string        `json:"workspace_root,omitempty"`
+	CanOpenWorkspace bool          `json:"can_open_workspace,omitempty"`
+	UpdateAvailable  bool          `json:"update_available,omitempty"`
+	LatestVersion    string        `json:"latest_version,omitempty"`
+	LatestNotes      string        `json:"latest_notes,omitempty"`
+	UpdateSourceSet  bool          `json:"update_source_set,omitempty"`
 	// Extension* describe the browser extension, so the extension can drive its
 	// own update prompt over Native Messaging instead of a cross-origin fetch
 	// (which needs CORS and silently fails without it). An available version is
@@ -80,6 +99,19 @@ func (r Request) Valid() bool {
 	if r.Type == "status" {
 		return r.Path == ""
 	}
+	if r.Type == "task_summary" || r.Type == "focus_task" {
+		clean := r.Path == "" && r.Protocol == "" && r.Server == "" &&
+			r.Ticket == "" && r.ExpiresAt == 0 && r.Mode == "" &&
+			r.RepoID == "" && r.LocalAction == "" && r.URI == ""
+		if r.Type == "task_summary" {
+			return clean && r.TaskID == ""
+		}
+		id := r.TaskID
+		if strings.HasPrefix(id, "session-") {
+			id = strings.TrimPrefix(id, "session-")
+		}
+		return clean && focusID.MatchString(id)
+	}
 	if r.Type == "update" {
 		return r.Path == ""
 	}
@@ -101,6 +133,11 @@ func (r Request) Valid() bool {
 	if r.Type == "query_local_folder" {
 		return r.RepoID != "" && r.Protocol == "" && r.Server == "" &&
 			r.Ticket == "" && r.ExpiresAt == 0
+	}
+	if r.Type == "open_uri" {
+		return len(r.URI) > 0 && len(r.URI) <= 2048 && r.Path == "" &&
+			r.Server == "" && r.Ticket == "" && r.Protocol == "" && r.Mode == "" &&
+			r.RepoID == "" && r.ExpiresAt == 0 && r.LocalAction == ""
 	}
 	if r.Type == "open_session" {
 		return r.Path == "" && r.Protocol != "" && r.Server != "" &&

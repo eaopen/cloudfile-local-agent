@@ -12,6 +12,10 @@ import (
 type FileJournal struct{ Path string }
 
 func (j FileJournal) Save(state State) error {
+	if state.SchemaVersion < 0 || state.SchemaVersion > 1 {
+		return errors.New("unsupported journal schema")
+	}
+	state.SchemaVersion = 1
 	dir := filepath.Dir(j.Path)
 	info, err := os.Lstat(dir)
 	if err != nil {
@@ -59,5 +63,8 @@ func (j FileJournal) Load() (State, error) {
 		return state, err
 	}
 	err = json.Unmarshal(data, &state)
+	if err == nil && (state.SchemaVersion < 0 || state.SchemaVersion > 1) {
+		return State{}, errors.New("unsupported journal schema")
+	}
 	return state, err
 }

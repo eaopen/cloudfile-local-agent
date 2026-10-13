@@ -151,8 +151,11 @@ func TestHTTPChangedSnapshotStopsBeforeUploadAndRedirectNeverForwardsProof(t *te
 	if err = remote.Heartbeat(context.Background(), fixtureLease()); err == nil || uploads != 1 {
 		t.Fatal("proof followed redirect")
 	}
-	if _, err = NewSessionHTTPTransport(server.Client(), "http://example.test/editing", fixtureReference(), remote.version); err == nil {
-		t.Fatal("insecure endpoint accepted")
+	if _, err = NewSessionHTTPTransport(server.Client(), "http://example.test/editing", fixtureReference(), remote.version); err != nil {
+		t.Fatalf("ordinary intranet HTTP transport rejected: %v", err)
+	}
+	if _, err = NewSessionHTTPTransport(server.Client(), "http://user@example.test/editing", fixtureReference(), remote.version); err == nil {
+		t.Fatal("unsafe HTTP endpoint accepted")
 	}
 }
 

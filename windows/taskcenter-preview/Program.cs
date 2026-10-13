@@ -1,0 +1,483 @@
+// CloudFile v0.8 Windows UI preview: local summaries only.
+// No native-host registration, upload, Checkout or lease operations.
+using System.Diagnostics;
+using System.Drawing;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Windows.Forms;
+
+namespace CloudFile.TaskCenter.Preview;
+
+internal sealed class TaskList
+{
+    [JsonPropertyName("tasks")] public List<TaskEntry> Tasks { get; set; } = new();
+    [JsonPropertyName("active_exclusive")] public int ActiveExclusive { get; set; }
+    [JsonPropertyName("uncertain_exclusive")] public int UncertainExclusive { get; set; }
+}
+internal sealed class TaskEntry
+{
+    [JsonPropertyName("task_id")] public string ID { get; set; } = "";
+    [JsonPropertyName("file_name")] public string FileName { get; set; } = "";
+    [JsonPropertyName("repo_id")] public string RepoID { get; set; } = "";
+    [JsonPropertyName("path")] public string Path { get; set; } = "";
+    [JsonPropertyName("mode")] public string Mode { get; set; } = "";
+    [JsonPropertyName("local_changed")] public bool Changed { get; set; }
+    [JsonPropertyName("needs_review")] public bool Review { get; set; }
+}
+internal sealed class TaskEvent
+{
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "";
+    [JsonPropertyName("file_name")] public string FileName { get; set; } = "";
+    [JsonPropertyName("task_id")] public string TaskID { get; set; } = "";
+}
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        if ((args.Length != 2 && args.Length != 4) || args[0] != "--taskcenter-bin" ||
+            !System.IO.Path.IsPathFullyQualified(args[1]) || !File.Exists(args[1]) ||
+            (args.Length == 4 && (args[2] != "--go-core-bin" ||
+                !System.IO.Path.IsPathFullyQualified(args[3]) || !File.Exists(args[3]))))
+        {
+            MessageBox.Show("用法：TaskCenterPreview --taskcenter-bin <完整本机 Go CLI 路径>",
+                "CloudFile 本地任务预览");
+            return;
+        }
+        // One preview instance per Windows logon session. No additional Chrome Host.
+        using var mutex = new Mutex(true, @"Local\CloudFileTaskCenterPreviewV08", out var acquired);
+        if (!acquired) return;
+        ApplicationConfiguration.Initialize();
+        using var center = new CenterForm(args[1], args.Length == 4 ? args[3] : null);
+        Application.Run(center);
+    }
+}
+
+internal sealed class FloatHandle : Form
+{
+    private Point startCursor;
+    private Point startPosition;
+    private bool moved;
+    private readonly Action clicked;
+    private readonly string goBinary;
+    public FloatHandle(Action clicked, string goBinary)
+    {
+        this.clicked = clicked;
+        this.goBinary = goBinary;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        ClientSize = new Size(48, 48);
+        BackColor = Color.FromArgb(41, 108, 204);
+        var face = new Label {
+            Text = "☁", Font = new Font("Segoe UI Symbol", 22, FontStyle.Bold),
+            ForeColor = Color.White, TextAlign = ContentAlignment.MiddleCenter,
+            Dock = DockStyle.Fill, Cursor = Cursors.SizeAll
+        };
+        Controls.Add(face);
+        face.MouseDown += HandleDown;
+        face.MouseMove += HandleMove;
+        face.MouseUp += HandleUp;
+        MouseDown += HandleDown;
+        MouseMove += HandleMove;
+        MouseUp += HandleUp;
+    }
+    private void HandleDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        startCursor = Cursor.Position;
+        startPosition = Location;
+        moved = false;
+    }
+    private void HandleMove(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        var delta = new Size(Cursor.Position.X - startCursor.X, Cursor.Position.Y - startCursor.Y);
+        if (Math.Abs(delta.Width) + Math.Abs(delta.Height) > 4) moved = true;
+        if (moved) Location = Point.Add(startPosition, delta);
+    }
+    private void HandleUp(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        if (!moved) clicked();
+        else {
+            var area = Screen.FromPoint(Location).WorkingArea;
+            Location = new Point(
+                Math.Clamp(Location.X, area.Left, area.Right - Width),
+                Math.Clamp(Location.Y, area.Top, area.Bottom - Height));
+            var edge = Math.Abs(Location.X - area.Left) < Math.Abs(area.Right - (Location.X + Width))
+                ? area.Left : area.Right - Width;
+            Location = new Point(edge, Location.Y);
+            SavePosition(Location, Screen.FromPoint(Location).DeviceName);
+        }
+    }
+    public void RestorePosition()
+    {
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+        var x = area.Right - Width - 12;
+        var y = area.Top + area.Height / 2;
+        var stored = LoadPosition();
+        if (stored.HasValue) { x = stored.Value.X; y = stored.Value.Y; }
+        area = Screen.FromPoint(new Point(x, y)).WorkingArea;
+        Location = new Point(Math.Clamp(x, area.Left, area.Right - Width),
+                             Math.Clamp(y, area.Top, area.Bottom - Height));
+    }
+    // Same Go per-user TaskCenter preferences as the macOS preview.
+    // The existing Native Host and edit journal remain the only authorities.
+    private Point? LoadPosition()
+    {
+        try {
+            using var process = new Process { StartInfo = PreferenceProcess("--get-preferences") };
+            if (!process.Start()) return null;
+            if (!process.WaitForExit(2000)) { process.Kill(); return null; }
+            if (process.ExitCode != 0) return null;
+            using var data = JsonDocument.Parse(process.StandardOutput.ReadToEnd());
+            if (!data.RootElement.TryGetProperty("float_position", out var pos) ||
+                pos.ValueKind != JsonValueKind.Object) return null;
+            return new Point(pos.GetProperty("x").GetInt32(), pos.GetProperty("y").GetInt32());
+        } catch (Exception error) when (error is IOException or InvalidOperationException
+                    or JsonException or System.ComponentModel.Win32Exception) { return null; }
+    }
+    private void SavePosition(Point position, string display)
+    {
+        string go = goBinary;
+        _ = Task.Run(() => {
+            try {
+                using var process = new Process { StartInfo = new ProcessStartInfo(go) {
+                    CreateNoWindow = true, UseShellExecute = false,
+                } };
+                process.StartInfo.ArgumentList.Add("--set-position");
+                process.StartInfo.ArgumentList.Add("--x");
+                process.StartInfo.ArgumentList.Add(position.X.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                process.StartInfo.ArgumentList.Add("--y");
+                process.StartInfo.ArgumentList.Add(position.Y.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                process.StartInfo.ArgumentList.Add("--display");
+                process.StartInfo.ArgumentList.Add("win:" + display);
+                if (process.Start() && !process.WaitForExit(2500)) process.Kill();
+            } catch (Exception error) when (error is IOException or InvalidOperationException
+                        or System.ComponentModel.Win32Exception) { /* position is advisory */ }
+        });
+    }
+    private ProcessStartInfo PreferenceProcess(string operation)
+    {
+        var info = new ProcessStartInfo(goBinary) {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        info.ArgumentList.Add(operation);
+        return info;
+    }
+
+}
+
+internal sealed class CenterForm : Form
+{
+    private readonly string goBinary;
+    private readonly string? goCoreBinary;
+    private readonly Dictionary<string,string> leaseWarnings = new();
+    private int activeExclusive;
+    private int uncertainExclusive;
+    private readonly NotifyIcon? tray;
+    private readonly FloatHandle floating;
+    private readonly ListView list;
+    private readonly Label status;
+    private readonly System.Windows.Forms.Timer timer;
+    private readonly CancellationTokenSource watcherStop = new();
+    private Process? watcher;
+    private bool querying;
+    private bool quitting;
+    private string? pendingFocusID;
+
+    public CenterForm(string goBinary, string? goCoreBinary)
+    {
+        this.goBinary = goBinary;
+        this.goCoreBinary = goCoreBinary;
+        Text = "CloudFile 任务中心（本地预览）";
+        ClientSize = new Size(660, 380);
+        MinimumSize = new Size(490, 300);
+        StartPosition = FormStartPosition.CenterScreen;
+        // Always keep a regular taskbar-capable window for locked-down users.
+        // Tray/Explorer integration must never be required for core functions.
+        ShowInTaskbar = true;
+        list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true };
+        list.Columns.Add("文件", 170);
+        list.Columns.Add("本地状态", 185);
+        list.Columns.Add("模式", 85);
+        list.Columns.Add("库 / 路径", 330);
+        status = new Label { Text = "正在读取本地任务…（不自动上传）",
+            Dock = DockStyle.Bottom, Height = 35, TextAlign = ContentAlignment.MiddleLeft };
+        Controls.Add(list);
+        Controls.Add(status);
+        var manage = new Button {
+            Text = "管理选中文件（人工提交 / 恢复原 Intent）",
+            Dock = DockStyle.Bottom, Height = 36
+        };
+        manage.Click += (_, _) => ManageSelectedTask();
+        Controls.Add(manage);
+        floating = new FloatHandle(() => { if (Visible) Hide(); else ShowCenter(); }, goBinary);
+        floating.RestorePosition();
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("打开任务中心", null, (_, _) => ShowCenter());
+        menu.Items.Add("刷新任务", null, (_, _) => _ = RefreshAsync());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出预览", null, (_, _) => ExitPreview());
+        NotifyIcon? optionalTray = null;
+        try {
+            optionalTray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true,
+                Text = "CloudFile 本地任务（可选系统托盘）", ContextMenuStrip = menu };
+            optionalTray.DoubleClick += (_, _) => ShowCenter();
+        } catch (Exception e) when (e is System.ComponentModel.Win32Exception
+                                      or InvalidOperationException
+                                      or System.Runtime.InteropServices.ExternalException) {
+            optionalTray?.Dispose();
+            // Explorer, notifications or managed tray access may be disabled by
+            // enterprise policy. The full task window and manual start still work.
+            status.Text = "系统托盘不可用；可继续使用任务栏和普通窗口。";
+        }
+        tray = optionalTray;
+        FormClosing += (_, e) => {
+            if (!quitting) {
+                e.Cancel = true;
+                // Enterprise policy may hide tray icons without reporting an
+                // error. Keep the taskbar route even if NotifyIcon.Visible
+                // reports true; no GUI feature can require shell integration.
+                WindowState = FormWindowState.Minimized;
+            }
+        };
+        timer = new System.Windows.Forms.Timer { Interval = 3000 };
+        timer.Tick += (_, _) => {
+            _ = RefreshAsync();
+            _ = PollFocusAsync();
+        };
+        // Tray is the DEFAULT primary entry. Keep the taskbar entry as a
+        // permanent fallback: NotifyIcon.Visible cannot prove Explorer actually
+        // displays an icon under enterprise shell/notification restrictions.
+        // If tray creation fails, show the ordinary task window instead.
+        Shown += (_, _) => {
+            if (tray is { Visible: true }) WindowState = FormWindowState.Minimized;
+        };
+        Load += (_, _) => {
+            timer.Start();
+            _ = RefreshAsync();
+            StartWatcher();
+            _ = PollFocusAsync();
+        };
+    }
+
+    private void ShowCenter()
+    {
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (querying || quitting) return;
+        querying = true;
+        try {
+            using var p = new Process { StartInfo = NewProcess("--list") };
+            p.Start();
+            var data = await p.StandardOutput.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await p.WaitForExitAsync(timeout.Token);
+            if (p.ExitCode != 0) throw new IOException("Go task inspection failed");
+            var snapshot = JsonSerializer.Deserialize<TaskList>(data)
+                ?? throw new IOException("invalid task summary");
+            var tasks = snapshot.Tasks;
+            activeExclusive = snapshot.ActiveExclusive;
+            uncertainExclusive = snapshot.UncertainExclusive;
+            list.BeginUpdate();
+            try {
+                list.Items.Clear();
+                foreach (var t in tasks) {
+                    var state = leaseWarnings.TryGetValue(t.ID, out var warn) ? warn :
+                        t.Review ? "需要检查" : t.Changed ? "本地已修改，待确认" : "本地编辑中";
+                    var row = new ListViewItem(t.FileName) { Tag = t.ID };
+                    row.SubItems.Add(state);
+                    row.SubItems.Add(t.Mode == "exclusive-edit" ? "独占" : "普通");
+                    row.SubItems.Add(t.RepoID + "  " + t.Path);
+                    list.Items.Add(row);
+                }
+            } finally { list.EndUpdate(); }
+            HighlightRequestedTask();
+            status.Text = $"本地任务 {tasks.Count} 项；活动独占 {activeExclusive}，状态待查 {uncertainExclusive}。保存≠上传。";
+            if (tasks.Count > 0 && !floating.Visible) floating.Show();
+            if (tasks.Count == 0 && floating.Visible) floating.Hide();
+        } catch (Exception e) when (e is IOException or InvalidOperationException
+                                    or System.ComponentModel.Win32Exception
+                                    or JsonException or OperationCanceledException) {
+            // Do not remove or hide existing tasks on a transient query failure.
+            status.Text = "无法更新本地任务；已有任务保持显示，请检查 Agent Core。";
+        } finally { querying = false; }
+    }
+
+    private void HighlightRequestedTask()
+    {
+        if (pendingFocusID == null) return;
+        foreach (ListViewItem item in list.Items) {
+            if (item.Tag is string key && key == pendingFocusID) {
+                item.Selected = true;
+                item.Focused = true;
+                item.EnsureVisible();
+                pendingFocusID = null;
+                break;
+            }
+        }
+    }
+
+    private bool pollingFocus;
+    // Only the one resident GUI polls. It also heartbeats so Chrome never
+    // advertises focus_task when no desktop listener is present.
+    private async Task PollFocusAsync()
+    {
+        if (pollingFocus || quitting) return;
+        pollingFocus = true;
+        try {
+            using var child = new Process { StartInfo = NewProcess("--poll-focus") };
+            if (!child.Start()) return;
+            var content = await child.StandardOutput.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            await child.WaitForExitAsync(timeout.Token);
+            if (child.ExitCode != 0) return;
+            using var json = JsonDocument.Parse(content);
+            string id = json.RootElement.GetProperty("task_id").GetString() ?? "";
+            if (id.Length == 0) return;
+            pendingFocusID = id;
+            ShowCenter();
+            HighlightRequestedTask();
+            // The next normal refresh will select the matching row if the
+            // desktop list has not finished loading when focus arrives.
+        } catch (Exception ex) when (ex is IOException or InvalidOperationException
+                    or JsonException or OperationCanceledException
+                    or System.ComponentModel.Win32Exception) {
+            // An unavailable focus observer must not interrupt local editing.
+        } finally { pollingFocus = false; }
+    }
+
+    // Invoked only by an explicit local GUI click, never by file save or
+    // Chrome IPC. Reuse the existing .NET editor forms and the signed Go
+    // publishing engine rather than building a second upload workflow.
+    private void ManageSelectedTask()
+    {
+        if (list.SelectedItems.Count != 1 || list.SelectedItems[0].Tag is not string taskID ||
+            !System.Text.RegularExpressions.Regex.IsMatch(taskID, @"\Asession-[0-9a-f]{64}\z")) {
+            status.Text = "请先选中一个受信编辑会话；普通文件列表无法直接触发云端写入。";
+            return;
+        }
+        string controller = Path.Combine(Path.GetDirectoryName(goBinary)!, "CloudFile.Agent.Windows.exe");
+        if (!File.Exists(controller)) {
+            status.Text = "当前是独立任务预览；人工提交请使用完整 v0.8 Agent 一体化包。";
+            return;
+        }
+        try {
+            using var launched = Process.Start(new ProcessStartInfo(controller) {
+                UseShellExecute = false, CreateNoWindow = false,
+                ArgumentList = { "--manage-local-task", taskID }
+            });
+            if (launched is null) throw new IOException("original local controller unavailable");
+            status.Text = "已向原生文件操作窗口提交定位请求；云端写入仍需逐文件确认。";
+        } catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception
+                                    or InvalidOperationException) {
+            status.Text = "本地操作窗口不可用；工作副本和待决 Intent 均保留。";
+        }
+    }
+
+    private ProcessStartInfo NewProcess(string action)
+    {
+        var info = new ProcessStartInfo(goBinary) {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        info.ArgumentList.Add(action);
+        return info;
+    }
+
+    private void StartWatcher()
+    {
+        try {
+            var watchInfo = NewProcess("--watch");
+            if (goCoreBinary != null) {
+                watchInfo.ArgumentList.Add("--go-core-bin");
+                watchInfo.ArgumentList.Add(goCoreBinary);
+            }
+            watcher = new Process { StartInfo = watchInfo };
+            watcher.Start();
+            _ = Task.Run(async () => {
+                try {
+                    while (!watcherStop.IsCancellationRequested) {
+                        var line = await watcher.StandardOutput.ReadLineAsync(watcherStop.Token);
+                        if (line is null) break;
+                        TaskEvent? evt = null;
+                        try { evt = JsonSerializer.Deserialize<TaskEvent>(line); }
+                        catch (JsonException) { continue; }
+                        if (evt == null || (evt.Kind is not ("local-saved" or "needs-review") &&
+                            !evt.Kind.StartsWith("checkout-", StringComparison.Ordinal))) continue;
+                        BeginInvoke(() => {
+                            if (quitting) return;
+                            if (evt.Kind is "checkout-renewed" or "checkout-ended") {
+                                leaseWarnings.Remove(evt.TaskID);
+                            } else if (evt.Kind.StartsWith("checkout-", StringComparison.Ordinal)) {
+                                leaseWarnings[evt.TaskID] = "⚠ 独占续租未确认";
+                                tray?.ShowBalloonTip(3500,"CloudFile 独占任务",
+                                    "后台续租未确认，请打开任务中心检查。不会自动释放 Checkout。",ToolTipIcon.Warning);
+                            } else {
+                                var notice = evt.Kind == "local-saved" ?
+                                    "本地已修改，尚未上传" : "本地文件需要检查";
+                                tray?.ShowBalloonTip(3500,"CloudFile · " + evt.FileName,
+                                    notice, evt.Kind == "needs-review" ? ToolTipIcon.Warning : ToolTipIcon.Info);
+                            }
+                            _ = RefreshAsync();
+                        });
+                    }
+                } catch (Exception ex) when (ex is IOException or OperationCanceledException
+                                           or InvalidOperationException) { }
+            });
+        } catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception) {
+            status.Text = "本地保存提示暂不可用；任务列表仍可查询。";
+        }
+    }
+
+    private void ExitPreview()
+    {
+        // Never silently stop renewing a live Checkout. Re-read durable
+        // journal state, not only last UI refresh. Failure must warn too.
+        int active = activeExclusive, uncertain = uncertainExclusive;
+        try {
+            using var check = new Process { StartInfo = NewProcess("--list") };
+            check.Start();
+            string data = check.StandardOutput.ReadToEnd();
+            if (!check.WaitForExit(3000) || check.ExitCode != 0)
+                throw new IOException("unknown task list");
+            var state = JsonSerializer.Deserialize<TaskList>(data)
+                ?? throw new IOException("unknown task list");
+            active = state.ActiveExclusive;
+            uncertain = state.UncertainExclusive;
+        } catch (Exception ex) when (ex is IOException or InvalidOperationException
+                    or JsonException or System.ComponentModel.Win32Exception) {
+            uncertain++;
+        }
+        if (active + uncertain > 0) {
+            if (MessageBox.Show(this,
+                "仍有独占编辑任务。退出将停止 TaskCenter 后台续租，不会释放 Checkout 或删除本地文件。仍然退出？",
+                "CloudFile 独占编辑", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        }
+        quitting = true;
+        timer.Stop();
+        watcherStop.Cancel();
+        try { if (watcher is { HasExited: false }) watcher.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        watcher?.Dispose();
+        if (tray != null) {
+            tray.Visible = false;
+            tray.Dispose();
+        }
+        floating.Close();
+        floating.Dispose();
+        Close();
+    }
+}

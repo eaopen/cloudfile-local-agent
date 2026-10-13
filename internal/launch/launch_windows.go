@@ -3,6 +3,7 @@
 package launch
 
 import (
+	"io"
 	"os/exec"
 	"syscall"
 )
@@ -14,26 +15,39 @@ const (
 	detachedProcess        = 0x00000008
 )
 
-// Detached starts executable with args and returns immediately, leaving the
-// child running after the caller exits.
-func Detached(executable string, args ...string) error {
-	if err := start(executable, args, creationFlags(true)); err == nil {
-		return nil
+// startDetached starts executable with args and returns the running command,
+// leaving the child running after the caller exits.
+func startDetached(executable string, args []string, stdin io.Reader) (*exec.Cmd, error) {
+	// A background upgrade must break out of the job object Chrome may hold the
+	// native host in, and must run without a console window.
+	command, err := start(executable, args, stdin, creationFlags(true))
+	if err == nil {
+		return command, nil
 	}
 	// Some job objects forbid breakaway (CreateProcess then fails); without the
 	// flag the child is still detached and windowless, it merely shares the
-	// parent's job lifetime.
-	return start(executable, args, creationFlags(false))
+	// parent's job lifetime. A fresh command is required: an exec.Cmd cannot be
+	// started twice.
+	retry, retryErr := start(executable, args, stdin, creationFlags(false))
+	if retryErr != nil {
+		// Report the original failure: it is the one the flags were meant to fix.
+		return nil, err
+	}
+	return retry, nil
 }
 
-func start(executable string, args []string, flags uint32) error {
+func start(executable string, args []string, stdin io.Reader, flags uint32) (*exec.Cmd, error) {
 	command := exec.Command(executable, args...)
 	// Stdout belongs to the Native Messaging pipe, so the child must never
 	// inherit it; progress goes to the agent's own update log instead.
+	command.Stdin = stdin
 	command.Stdout = nil
 	command.Stderr = nil
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
-	return command.Start()
+	if err := command.Start(); err != nil {
+		return nil, err
+	}
+	return command, nil
 }
 
 func creationFlags(breakaway bool) uint32 {
