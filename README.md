@@ -1,3 +1,5 @@
+[CloudFile product home / 产品总入口](https://github.com/eaopen/cloudfile) · [English](https://github.com/eaopen/cloudfile/blob/main/README.md) · [简体中文](https://github.com/eaopen/cloudfile/blob/main/README.zh-CN.md)
+
 # CloudFile Local Agent
 
 > 用途：说明 CloudFile 本地查看/编辑 Native Messaging Host 的构建、配置和安全边界
@@ -188,3 +190,9 @@ Go 编辑基础设施新增 `SessionWorker`：以操作系统文件锁排斥同�
 macOS 独立安装、Keychain 配对、签名更新与当前能力边界见 [macOS 实现说明](docs/macos.md)。
 
 设备独占上传实现及尚未开放的产品契约见 [设备上传契约](docs/device-upload-contract.md)。两端仅分发离线完整 ZIP，安装/注册无需管理员权限。
+
+## License / 许可证
+
+CloudFile-owned code is licensed under [Apache 2.0](LICENSE). Third-party components retain their own licenses. See [NOTICE](NOTICE).
+
+CloudFile 自有代码采用 [Apache 2.0](LICENSE)，第三方组件保留各自许可证，见 [NOTICE](NOTICE)。
