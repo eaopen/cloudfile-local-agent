@@ -107,7 +107,7 @@ pub fn abandon_lease(client: &Client, lease: &Lease) -> Result<()> {
     }
     Ok(())
 }
-fn request(client: &Client, lease: &Lease, intent: &Intent) -> Result<Value> {
+pub(crate) fn request(client: &Client, lease: &Lease, intent: &Intent) -> Result<Value> {
     if !valid(lease)
         || !matches!(intent.action, Action::Commit | Action::Checkin)
         || !device::hex(&intent.content_digest, 64)
@@ -190,6 +190,19 @@ pub fn publish(
     lease: &Lease,
     intent: &Intent,
 ) -> Result<Receipt> {
+    // A large snapshot may reuse native CDC blocks instead of resending bytes.
+    // `None` means nothing was published, so the proven full transfer below
+    // stays available with the same prepared intent.
+    if let Some(receipt) = crate::cdc::publish(
+        root,
+        id,
+        client,
+        intent,
+        crate::cdc::Mode::Commit,
+        Some(lease),
+    )? {
+        return Ok(receipt);
+    }
     let mut body = request(client, lease, intent)?;
     let dir = session::task_dir(root, id)?;
     let source = dir.join(format!("{}.snapshot", intent.intent_id));

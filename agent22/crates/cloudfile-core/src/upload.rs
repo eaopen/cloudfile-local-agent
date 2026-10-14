@@ -12,7 +12,8 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
 };
-const UPLOAD: &str = "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/optimistic-upload/";
+pub(crate) const UPLOAD: &str =
+    "/api/v2.1/cloudfile/extensions/local-edit/v1/agent/optimistic-upload/";
 #[derive(Deserialize)]
 struct Transfer {
     path: String,
@@ -155,6 +156,14 @@ fn publish(root: &Path, id: &str, client: &Client, intent: &Intent) -> Result<Re
         || !device::hex(&intent.content_digest, 64)
     {
         bail!("无效的原上传快照");
+    }
+    // A large snapshot may reuse native CDC blocks instead of resending bytes.
+    // `None` means nothing was published, so the proven full transfer below
+    // stays available with the same prepared intent.
+    if let Some(receipt) =
+        crate::cdc::publish(root, id, client, intent, crate::cdc::Mode::Optimistic, None)?
+    {
+        return Ok(receipt);
     }
     let dir = session::task_dir(root, id)?;
     let source = dir.join(format!("{}.snapshot", intent.intent_id));

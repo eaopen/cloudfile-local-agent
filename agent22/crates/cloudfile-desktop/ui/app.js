@@ -63,6 +63,8 @@ function renderExclusive(info,buttons,task,busy){
 }
 async function refresh(){if(refreshing)return;refreshing=true;try{
  const result=await invoke('task_summary');const container=document.querySelector('#tasks');container.replaceChildren();
+ const notice=document.querySelector('.notice');
+ if(result.cdc_enabled&&!document.querySelector('#cdc-hint')){const hint=document.createElement('p');hint.id='cdc-hint';hint.textContent='大文件分块上传已启用：不小于 16 MiB 的保存会优先复用云端已有分块，仅在确实节省空间时使用，否则仍为全量传输。';notice.append(hint);}
  if(!result.tasks.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='还没有本地任务。添加服务并连接设备后，从 CloudFile 网页选择本地编辑。';container.append(empty);}
  for(const task of result.tasks){const row=document.createElement('article');row.className='task';row.id=task.task_id;
  const info=document.createElement('div');const name=document.createElement('strong');name.textContent=task.file_name;

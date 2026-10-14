@@ -55,7 +55,7 @@ fn summaries(root: &std::path::Path, uploading: &Mutex<HashSet<String>>) -> anyh
             "auto_upload":automatic.ok(),"uploading":busy.contains(&task.task_id),
             "pending_upload":pending.ok().flatten().is_some(),"pending_action":action}));
     }
-    Ok(json!({"ok":true,"tasks":tasks}))
+    Ok(json!({"ok":true,"cdc_enabled":cloudfile_core::cdc::enabled(),"tasks":tasks}))
 }
 #[tauri::command]
 async fn save_cloud(state: tauri::State<'_, State>, task_id: String) -> Result<Value, String> {

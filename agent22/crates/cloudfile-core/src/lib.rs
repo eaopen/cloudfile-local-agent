@@ -14,6 +14,7 @@ pub fn now() -> u64 {
 }
 
 pub mod auto_upload;
+pub mod cdc;
 pub mod device;
 pub mod exclusive;
 pub mod paired_session;
