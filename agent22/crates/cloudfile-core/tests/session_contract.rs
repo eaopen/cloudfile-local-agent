@@ -11,12 +11,8 @@ fn fixture(cross_origin: bool, redirect: bool) -> (String, thread::JoinHandle<()
     let origin = server.clone();
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let mut data = [0; 8192];
-        let n = stream.read(&mut data).unwrap();
-        assert!(String::from_utf8_lossy(&data[..n]).contains("/agent-sessions/claim/"));
+        let request = read_request(&mut stream);
+        assert!(request.contains("/agent-sessions/claim/"));
         let body=json!({"session_id":"11111111-1111-4111-8111-111111111111","mode":"local-edit","expires_at":cloudfile_core::now()+60,"repo_id":"22222222-2222-4222-8222-222222222222","path":"/report.txt","file":{"name":"report.txt","content_url":if cross_origin{"http://127.0.0.1:1/stolen".into()}else{format!("{origin}/content")}},"file_id":"a".repeat(40),"size":3}).to_string();
         write!(
             stream,
@@ -28,10 +24,7 @@ fn fixture(cross_origin: bool, redirect: bool) -> (String, thread::JoinHandle<()
         drop(stream);
         if !cross_origin {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let _ = stream.read(&mut data).unwrap();
+            let _ = read_request(&mut stream);
             if redirect {
                 write!(stream,"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
             } else {
@@ -44,6 +37,32 @@ fn fixture(cross_origin: bool, redirect: bool) -> (String, thread::JoinHandle<()
         }
     });
     (server, handle)
+}
+/// Read a complete HTTP request before answering. Responding while the client
+/// is still writing its body races the connection close and breaks the client.
+fn read_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+        assert!(head.len() < 16384);
+    }
+    let text = String::from_utf8(head).unwrap();
+    let length = text
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+        .unwrap_or(0);
+    let mut body = vec![0; length];
+    if length > 0 {
+        stream.read_exact(&mut body).unwrap();
+    }
+    text + &String::from_utf8_lossy(&body)
 }
 fn request(server: String) -> wire::Request {
     wire::Request::Open {
@@ -137,12 +156,9 @@ fn disabled_edit_capability_is_reported_before_pairing() {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     session::trust(&root, format!("{origin}/seafile")).unwrap();
     let worker = std::thread::spawn(move || {
-        use std::io::{Read, Write};
         let (mut stream, _) = listener.accept().unwrap();
-        let mut data = [0; 4096];
-        let n = stream.read(&mut data).unwrap();
-        assert!(String::from_utf8_lossy(&data[..n])
-            .contains("GET /seafile/api/v2.1/cloudfile/capabilities/"));
+        let request = read_request(&mut stream);
+        assert!(request.contains("GET /seafile/api/v2.1/cloudfile/capabilities/"));
         let body = r#"{"capabilities":{"local.open-edit":{"enabled":false}}}"#;
         write!(
             stream,

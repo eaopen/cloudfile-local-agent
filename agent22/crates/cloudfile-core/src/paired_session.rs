@@ -1,5 +1,6 @@
 use crate::{
     device::{self, Client},
+    exclusive,
     session::{self, Task},
     storage,
 };
@@ -75,15 +76,29 @@ pub fn open_with(root: &Path, open: &Open, client: &Client) -> Result<Task> {
     );
     let dir = session::task_dir(root, &id)?;
     storage::private_dir(&dir)?;
-    let _lock = storage::lock(&dir.join("operation.lock"))?;
-    if dir.join("task.json").exists() {
-        let task = session::load(root, &id)?;
-        if task.device_id.as_deref() != Some(&client.device_id) {
-            bail!("任务属于另一设备");
+    // Hold the session lock only while local state changes. The Checkout
+    // handoff below performs network calls and must not hold it.
+    let task = {
+        let _lock = storage::lock(&dir.join("operation.lock"))?;
+        if dir.join("task.json").exists() {
+            let task = session::load(root, &id)?;
+            if task.device_id.as_deref() != Some(&client.device_id) {
+                bail!("任务属于另一设备");
+            }
+            session::local_path(root, &task)?;
+            task
+        } else {
+            claim_and_download(open, client, &dir, &id)?
         }
-        session::local_path(root, &task)?;
-        return Ok(task);
+    };
+    if task.mode == "exclusive-edit" {
+        // Opening or re-opening retries an unacknowledged Checkout handoff
+        // instead of silently continuing without the guarded reservation.
+        exclusive::ensure_lease(root, &task.task_id, client)?;
     }
+    Ok(task)
+}
+fn claim_and_download(open: &Open, client: &Client, dir: &Path, id: &str) -> Result<Task> {
     let mut body = client.body();
     body["ticket"] = serde_json::json!(open.ticket);
     client.signed("challenge", "claim", &mut body)?;
@@ -103,10 +118,13 @@ pub fn open_with(root: &Path, open: &Open, client: &Client) -> Result<Task> {
         || grant.transfer.authorization != "Bearer"
         || grant.transfer.redirects
         || grant.transfer.resume
-        || grant.file.mode != "optimistic-edit"
+        || !matches!(
+            grant.file.mode.as_str(),
+            "optimistic-edit" | "exclusive-edit"
+        )
         || !device::hex(&grant.file.base_version, 40)
     {
-        bail!("当前版本仅支持普通本地编辑；下载授权无效或模式不支持");
+        bail!("下载授权无效或模式不支持；当前仅支持普通本地编辑与独占编辑");
     }
     let ext = &grant.file.extension;
     if ext.len() < 2
@@ -139,7 +157,7 @@ pub fn open_with(root: &Path, open: &Open, client: &Client) -> Result<Task> {
     {
         bail!("下载响应无效");
     }
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     let n = std::io::copy(&mut (&mut response).take(size + 1), &mut tmp)?;
     if n != size {
         bail!("下载未完成");
@@ -149,10 +167,10 @@ pub fn open_with(root: &Path, open: &Open, client: &Client) -> Result<Task> {
     let hash = session::digest(tmp.path())?;
     tmp.persist_noclobber(target)?;
     let task = Task {
-        task_id: id,
+        task_id: id.to_string(),
         device_id: Some(client.device_id.clone()),
         file_name: name,
-        mode: "optimistic-edit".into(),
+        mode: grant.file.mode,
         server: client.server.clone(),
         repo_id: String::new(),
         remote_path: String::new(),

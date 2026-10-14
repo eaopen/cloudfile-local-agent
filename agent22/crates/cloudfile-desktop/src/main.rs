@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use cloudfile_core::{
-    auto_upload, device, ipc, journal, paired_session, session, storage, upload, wire,
+    auto_upload, device, exclusive, ipc, journal, paired_session, session, storage, upload, wire,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -32,11 +32,28 @@ fn summaries(root: &std::path::Path, uploading: &Mutex<HashSet<String>>) -> anyh
             .map(|h| h != task.baseline_digest);
         let pending = journal::pending(root, &task.task_id);
         let automatic = auto_upload::settings(root, &task.task_id);
+        let lease = journal::lease(root, &task.task_id);
+        let acknowledged = journal::lease_acknowledged(root, &task.task_id);
+        let closed = journal::closed(root, &task.task_id);
+        let action = pending.as_ref().ok().and_then(|value| {
+            value.as_ref().map(|i| {
+                match i.action {
+                    journal::Action::OptimisticUpdate => "optimistic-update",
+                    journal::Action::Commit => "commit",
+                    journal::Action::Checkin => "checkin",
+                }
+                .to_string()
+            })
+        });
         tasks.push(json!({"task_id":task.task_id,"file_name":task.file_name,"mode":task.mode,
             "local_changed":changed.as_ref().copied().unwrap_or(false),"needs_review":changed.is_err() || pending.is_err() || automatic.is_err(),
             "can_upload":task.mode == "optimistic-edit" && task.device_id.is_some(),
+            "exclusive":task.mode == "exclusive-edit" && task.device_id.is_some(),
+            "has_lease":lease.as_ref().map(|v| v.is_some()).unwrap_or(false),
+            "lease_acknowledged":acknowledged.unwrap_or(false),
+            "checkout_closed":closed.unwrap_or(false),
             "auto_upload":automatic.ok(),"uploading":busy.contains(&task.task_id),
-            "pending_upload":pending.ok().flatten().is_some()}));
+            "pending_upload":pending.ok().flatten().is_some(),"pending_action":action}));
     }
     Ok(json!({"ok":true,"tasks":tasks}))
 }
@@ -120,6 +137,52 @@ fn trusted_origins(state: tauri::State<'_, State>) -> Result<Vec<String>, String
 fn open_task(state: tauri::State<'_, State>, task_id: String) -> Result<(), String> {
     session::launch(&state.root, &task_id).map_err(|_| "无法打开工作副本".into())
 }
+/// Explicit user action. `checkin` publishes and releases the Checkout.
+#[tauri::command]
+async fn commit_task(
+    state: tauri::State<'_, State>,
+    task_id: String,
+    checkin: bool,
+) -> Result<Value, String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        exclusive::commit(&root, &task_id, checkin).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "提交任务执行失败".to_string())?
+}
+/// Recovers the original commit intent; never creates a new one.
+#[tauri::command]
+async fn recover_commit(state: tauri::State<'_, State>, task_id: String) -> Result<Value, String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        exclusive::recover(&root, &task_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "查询提交执行失败".to_string())?
+}
+#[tauri::command]
+async fn renew_checkout(state: tauri::State<'_, State>, task_id: String) -> Result<Value, String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        exclusive::renew_checkout(&root, &task_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "续租执行失败".to_string())?
+}
+/// Explicit release. The server refuses while a commit intent is pending.
+#[tauri::command]
+async fn release_checkout(
+    state: tauri::State<'_, State>,
+    task_id: String,
+) -> Result<Value, String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        exclusive::release(&root, &task_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "释放 Checkout 执行失败".to_string())?
+}
 fn main() {
     if let Err(e) = run() {
         eprintln!("CloudFile desktop: {e}");
@@ -134,7 +197,7 @@ fn run() -> anyhow::Result<()> {
     ipc::recover(&root)?;
     let uploading = Arc::new(Mutex::new(HashSet::new()));
     tauri::Builder::default().manage(State{root:root.clone(),uploading:uploading.clone()})
- .invoke_handler(tauri::generate_handler![task_summary,trust_origin,trusted_origins,open_task,save_cloud,recover_upload,begin_pairing,service_status,set_auto_upload])
+ .invoke_handler(tauri::generate_handler![task_summary,trust_origin,trusted_origins,open_task,save_cloud,recover_upload,begin_pairing,service_status,set_auto_upload,commit_task,recover_commit,renew_checkout,release_checkout])
  .setup(move|app|{
   use tauri::{menu::{Menu,MenuItem},tray::TrayIconBuilder};
   let open=MenuItem::with_id(app,"open","打开任务中心",true,None::<&str>)?;

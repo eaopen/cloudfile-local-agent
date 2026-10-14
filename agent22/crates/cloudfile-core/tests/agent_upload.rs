@@ -38,6 +38,9 @@ impl Drop for Server {
     }
 }
 fn request(stream: &mut TcpStream) -> (String, std::collections::HashMap<String, String>, Vec<u8>) {
+    // The listening socket is non-blocking; be explicit so a loaded machine
+    // cannot turn an accepted connection into an immediate WouldBlock.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

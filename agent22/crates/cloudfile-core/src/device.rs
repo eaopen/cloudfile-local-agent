@@ -288,6 +288,23 @@ impl Client {
             "claim",
             "read-challenge",
             "read-ticket",
+            // Exclusive Checkout handoff: a current paired device may only
+            // receive, acknowledge or renew its own guarded reservation.
+            "lease-challenge",
+            "lease-receive",
+            "lease-confirm-challenge",
+            "lease-confirm",
+            "lease-renew-challenge",
+            "lease-renew",
+            "lease-abandon-challenge",
+            "lease-abandon",
+            // Signed single-file CommitIntent and its receipt.
+            "commit-challenge",
+            "commit-authorize",
+            "commit-upload-authorize",
+            "commit-status-challenge",
+            "commit-status",
+            // Optimistic local edit publication.
             "optimistic-upload-challenge",
             "optimistic-upload-authorize",
             "optimistic-status-challenge",

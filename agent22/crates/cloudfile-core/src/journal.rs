@@ -36,6 +36,18 @@ pub struct Journal {
     pub schema: u32,
     pub pending: Option<Intent>,
     pub receipt: Option<Receipt>,
+    /// Exclusive Checkout handoff. The token is a Checkout proof: it must only
+    /// ever live in this owner-only file and is erased once the session closes.
+    #[serde(default)]
+    pub lease: Option<crate::exclusive::Lease>,
+    /// The device handoff was acknowledged, so the server erased its ciphertext.
+    /// A lost acknowledgement must be retried, never assumed.
+    #[serde(default)]
+    pub lease_ack: bool,
+    /// A confirmed checkin released the server Checkout; the local session is
+    /// finished and must not accept further commits or a new reservation.
+    #[serde(default)]
+    pub closed: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Receipt {
@@ -54,6 +66,9 @@ fn load(dir: &Path) -> Result<Journal> {
             schema: 1,
             pending: None,
             receipt: None,
+            lease: None,
+            lease_ack: false,
+            closed: false,
         });
     }
     let j: Journal = storage::read(&p)?;
@@ -64,6 +79,52 @@ fn load(dir: &Path) -> Result<Journal> {
 }
 pub fn pending(root: &Path, id: &str) -> Result<Option<Intent>> {
     Ok(load(&session::task_dir(root, id)?)?.pending)
+}
+pub fn lease(root: &Path, id: &str) -> Result<Option<crate::exclusive::Lease>> {
+    Ok(load(&session::task_dir(root, id)?)?.lease)
+}
+pub fn closed(root: &Path, id: &str) -> Result<bool> {
+    Ok(load(&session::task_dir(root, id)?)?.closed)
+}
+pub fn lease_acknowledged(root: &Path, id: &str) -> Result<bool> {
+    Ok(load(&session::task_dir(root, id)?)?.lease_ack)
+}
+/// Records the durable acknowledgement of a device Checkout handoff.
+pub fn acknowledge_lease(root: &Path, id: &str) -> Result<()> {
+    let dir = session::task_dir(root, id)?;
+    let _guard = storage::lock(&dir.join("operation.lock"))?;
+    let mut j = load(&dir)?;
+    if j.lease.is_none() {
+        bail!("no durable checkout lease");
+    }
+    j.lease_ack = true;
+    storage::write(&dir.join("journal.json"), &j)
+}
+/// Durably stores the device Checkout handoff before it is acknowledged.
+pub fn set_lease(root: &Path, id: &str, lease: &crate::exclusive::Lease) -> Result<()> {
+    let dir = session::task_dir(root, id)?;
+    let _guard = storage::lock(&dir.join("operation.lock"))?;
+    let mut j = load(&dir)?;
+    if j.closed {
+        bail!("checkout already closed");
+    }
+    if j.lease.as_ref().is_some_and(|current| current != lease) {
+        bail!("existing checkout lease differs; manual reconciliation required");
+    }
+    j.lease = Some(lease.clone());
+    storage::write(&dir.join("journal.json"), &j)
+}
+pub fn close(root: &Path, id: &str) -> Result<()> {
+    let dir = session::task_dir(root, id)?;
+    let _guard = storage::lock(&dir.join("operation.lock"))?;
+    let mut j = load(&dir)?;
+    if j.pending.is_some() {
+        bail!("recover original pending intent first");
+    }
+    j.closed = true;
+    j.lease = None;
+    j.lease_ack = false;
+    storage::write(&dir.join("journal.json"), &j)
 }
 /// This primitive does not authorize upload or acquire checkout. Never expose it to browsers.
 pub fn capture(root: &Path, id: &str, action: Action) -> Result<Intent> {
@@ -76,12 +137,18 @@ pub fn capture_observed(
     expected: Option<&str>,
 ) -> Result<Intent> {
     let task = session::load(root, id)?;
-    if !matches!(task.mode.as_str(), "local-edit" | "optimistic-edit") {
+    if !matches!(
+        task.mode.as_str(),
+        "local-edit" | "optimistic-edit" | "exclusive-edit"
+    ) {
         bail!("editable task required");
     }
     let dir = session::task_dir(root, id)?;
     let _guard = storage::lock(&dir.join("operation.lock"))?;
     let mut j = load(&dir)?;
+    if j.closed {
+        bail!("checkout already closed");
+    }
     if j.pending.is_some() {
         bail!("recover original pending intent first");
     }
@@ -159,11 +226,20 @@ pub fn accept(root: &Path, id: &str, receipt: Receipt) -> Result<()> {
     j.receipt = Some(receipt.clone());
     storage::write(&dir.join("journal.json"), &j)?;
     let mut task = session::load(root, id)?;
-    task.baseline_file_id = receipt.result_file_id;
+    task.baseline_file_id = receipt.result_file_id.clone();
     task.baseline_digest = i.content_digest.clone();
     task.size = i.snapshot_size;
     storage::write(&dir.join("task.json"), &task)?;
+    let checked_in = i.action == Action::Checkin;
     j.pending = None;
+    if checked_in {
+        // The server released the guarded Checkout; keep only a closed marker.
+        j.closed = true;
+        j.lease = None;
+        j.lease_ack = false;
+    } else if let Some(lease) = j.lease.as_mut() {
+        lease.base_file_id = receipt.result_file_id;
+    }
     storage::write(&dir.join("journal.json"), &j)?;
     Ok(())
 }
