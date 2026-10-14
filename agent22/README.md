@@ -8,15 +8,15 @@ Chrome Native Messaging 与原有 CloudFile Hub/Server 保留为协议边界。
 
 - Tauri 任务中心、托盘、服务配置、设备连接、本地打开与修改状态。
 - Chrome `open_uri` 设备签名会话：认领、下载普通编辑工作副本。
-- **保存云端**：Agent 自动定位工作副本、捕获快照、签名授权并全量上传；无需手动选文件或网页上传。
+- **本地保存后自动上传**：文件内容稳定至少 3 秒后，Agent 捕获快照、签名授权并全量上传；无需手动选文件或网页上传。支持按任务暂停自动上传，也可点击“保存云端”立即提交。
 - 发布确认后推进基线，可继续编辑再次保存。响应丢失先查询原 Intent；重试发送原快照，不替换成后来修改的内容。
 - 密钥存储在 macOS Keychain / Windows Credential Manager；采用 Rust P-256 签名，不依赖旧 Agent。当前是系统保护的可读密钥，不宣称 CNG/硬件不可导出密钥。
 - 独立用户目录 `CloudFileAgent22`、开发 Host `com.cloudfile.agent22.dev`。
 
-本地应用 Ctrl/Cmd+S 只保存到磁盘；点击任务中心“保存云端”后由 Agent 上传。
+本地应用 Ctrl/Cmd+S 保存到磁盘后，Agent 自动观察工作副本并上传。发生网络中断、冲突或未确认回执时暂停自动上传，保留工作副本与原上传快照；不会盲目自动重发。
 当前普通编辑单文件上限与现有服务端一致，为 128 MiB。
 旧 `cloudfile-local/v2` 会话仍可本地打开，但不具备新设备上传授权；应从网页重新发起普通本地编辑。
-独占编辑、CDC、自动上传、复杂恢复与自动更新后置。
+独占编辑、CDC、复杂恢复与自动更新后置。
 
 验证：macOS 编译与协议集成测试；尚未完成运行中 Hub/Server + Chrome + Office 的端到端验收，也未实机验证 Windows。
 
@@ -52,7 +52,7 @@ python3 scripts/register-host.py --extension-id YOUR_EXTENSION_ID --bin-dir targ
 1. 在任务中心添加服务并点击“连接设备”。
 2. 在开发 Chrome 配置文件登录同一 CloudFile 服务，点击扩展中的“连接 Agent 2.2”。配对窗口有效期 10 分钟，浏览器登录 Cookie 不会交给 Agent。
 3. 从网页发起“普通本地编辑”（设备会话 `cloudfile-open://v1/open`），在本地应用保存修改。
-4. 在任务中心点击“保存云端”。无需选择文件；确认发布后可继续编辑。
+4. Agent 在文件内容稳定后自动上传，也可在任务中心点击“保存云端”。确认发布后可继续编辑。
 
 服务端必须已启用设备会话和 `CLOUDFILE_AGENT2_OPTIMISTIC_UPLOAD_ENABLED`，并部署原生发布接口。接口未启用会显示失败并保留副本，不会降级为普通网页上传。
 原上传待确认时，“查询上传结果”只查询；“重试原上传”先查询，再在未发布时重发同一 Intent 的原快照。后来修改仍留在工作副本，下次保存再上传。
@@ -62,6 +62,10 @@ python3 scripts/package.py
 ```
 
 构建本机架构 ZIP，两个可执行文件必须放在同一目录。
+打包脚本需要 Python 3.11 或更高版本。macOS 包含可双击的开发 `.app`，
+注册 Host 时 `--bin-dir` 指向该应用的 `Contents/MacOS`；Windows 指向 ZIP 解压目录。
+GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生成开发 ZIP；
+构建通过不代替 Windows 实机和真实服务端验收。
 
 ## 代码边界
 

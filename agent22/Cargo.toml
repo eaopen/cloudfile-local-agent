@@ -4,7 +4,7 @@ members = ["crates/cloudfile-core", "crates/cloudfile-native-host", "crates/clou
 default-members = ["crates/cloudfile-core", "crates/cloudfile-native-host"]
 
 [workspace.package]
-version = "2.2.0-alpha.1"
+version = "2.2.0-alpha.2"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.90"

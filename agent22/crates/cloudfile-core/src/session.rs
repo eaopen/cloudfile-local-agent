@@ -99,7 +99,11 @@ pub fn trust(root: &Path, raw: String) -> Result<()> {
     if !cfg.allowed_origins.contains(&server) {
         cfg.allowed_origins.push(server.clone());
     }
-    cfg.service_paths.insert(server, prefix.into());
+    // Re-adding the origin must not erase a known deployment path. A paired
+    // device is origin-bound; an EAP portal root is not the CloudFile API root.
+    if !prefix.is_empty() || !cfg.service_paths.contains_key(&server) {
+        cfg.service_paths.insert(server, prefix.into());
+    }
     storage::write(&root.join("config.json"), &cfg)
 }
 pub fn config(root: &Path) -> Result<Config> {

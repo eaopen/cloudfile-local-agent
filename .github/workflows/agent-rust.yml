@@ -1,0 +1,40 @@
+name: Rust Agent MVP
+on:
+  push:
+    branches: [agent-rust]
+    paths: ['agent22/**', '.github/workflows/agent-rust.yml']
+  pull_request:
+    paths: ['agent22/**', '.github/workflows/agent-rust.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-and-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: agent22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test locked Rust workspace
+        run: cargo test --workspace --locked
+      - name: Test Chrome pairing adapter
+        run: node --test scripts/dev-pairing.test.cjs
+      - name: Package development build
+        run: python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent22-${{ matrix.os }}
+          path: agent22/dist/*.zip
+          if-no-files-found: error

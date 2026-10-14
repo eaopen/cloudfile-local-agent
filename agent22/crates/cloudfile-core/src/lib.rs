@@ -13,6 +13,7 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
+pub mod auto_upload;
 pub mod device;
 pub mod paired_session;
 pub mod upload;

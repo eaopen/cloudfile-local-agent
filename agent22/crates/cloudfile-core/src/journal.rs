@@ -15,6 +15,14 @@ pub enum Action {
     Commit,
     Checkin,
 }
+#[derive(Debug)]
+pub struct WorkingCopyChanged;
+impl std::fmt::Display for WorkingCopyChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("文件仍在保存，请稍后重试")
+    }
+}
+impl std::error::Error for WorkingCopyChanged {}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Intent {
     pub intent_id: uuid::Uuid,
@@ -59,6 +67,14 @@ pub fn pending(root: &Path, id: &str) -> Result<Option<Intent>> {
 }
 /// This primitive does not authorize upload or acquire checkout. Never expose it to browsers.
 pub fn capture(root: &Path, id: &str, action: Action) -> Result<Intent> {
+    capture_observed(root, id, action, None)
+}
+pub fn capture_observed(
+    root: &Path,
+    id: &str,
+    action: Action,
+    expected: Option<&str>,
+) -> Result<Intent> {
     let task = session::load(root, id)?;
     if !matches!(task.mode.as_str(), "local-edit" | "optimistic-edit") {
         bail!("editable task required");
@@ -96,10 +112,13 @@ pub fn capture(root: &Path, id: &str, action: Action) -> Result<Intent> {
         || before.modified()? != after.modified()?
         || before.len() != after.len()
     {
-        bail!("working copy changed during capture");
+        return Err(WorkingCopyChanged.into());
     }
-    if session::digest(&path)? != format!("{:x}", hash.clone().finalize()) {
-        bail!("文件仍在保存，请稍后重试");
+    let captured_digest = format!("{:x}", hash.clone().finalize());
+    if session::digest(&path)? != captured_digest
+        || expected.is_some_and(|value| value != captured_digest)
+    {
+        return Err(WorkingCopyChanged.into());
     }
     snapshot.as_file().sync_all()?;
     let intent = Intent {

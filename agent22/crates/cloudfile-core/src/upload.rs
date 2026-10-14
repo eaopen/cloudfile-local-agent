@@ -58,9 +58,25 @@ pub fn recover(root: &Path, id: &str) -> Result<Value> {
     }
 }
 pub fn save_with(root: &Path, id: &str, client: &Client) -> Result<Value> {
+    save_inner(root, id, client, None)
+}
+pub fn save_observed(root: &Path, id: &str, digest: &str) -> Result<Value> {
+    let (_, client) = task_client(root, id)?;
+    save_observed_with(root, id, &client, digest)
+}
+pub fn save_observed_with(root: &Path, id: &str, client: &Client, digest: &str) -> Result<Value> {
+    match save_inner(root, id, client, Some(digest)) {
+        Err(error) if error.is::<journal::WorkingCopyChanged>() => Ok(json!({"state":"changing"})),
+        result => result,
+    }
+}
+fn save_inner(root: &Path, id: &str, client: &Client, observed: Option<&str>) -> Result<Value> {
     let dir = session::task_dir(root, id)?;
-    let _lock = storage::lock(&dir.join("upload.lock"))
-        .map_err(|_| anyhow::anyhow!("此任务正在上传，请等待结果"))?;
+    let _lock = match storage::lock(&dir.join("upload.lock")) {
+        Ok(lock) => lock,
+        Err(_) if observed.is_some() => return Ok(json!({"state":"busy"})),
+        Err(_) => bail!("此任务正在上传，请等待结果"),
+    };
     let task = session::load(root, id)?;
     if task.mode != "optimistic-edit"
         || task.server != client.server
@@ -70,6 +86,11 @@ pub fn save_with(root: &Path, id: &str, client: &Client) -> Result<Value> {
         bail!("设备上传任务不匹配");
     }
     let intent = if let Some(i) = journal::pending(root, id)? {
+        // Background observation never retries an existing intent. A manual
+        // operation may have captured it after the observer last checked.
+        if observed.is_some() {
+            return Ok(json!({"state":"pending"}));
+        }
         if let Some(receipt) = query(client, &i)? {
             journal::accept(root, id, receipt)?;
             return Ok(json!({"state":"published"}));
@@ -79,7 +100,7 @@ pub fn save_with(root: &Path, id: &str, client: &Client) -> Result<Value> {
         if session::digest(&session::local_path(root, &task)?)? == task.baseline_digest {
             return Ok(json!({"state":"unchanged"}));
         }
-        journal::capture(root, id, Action::OptimisticUpdate)?
+        journal::capture_observed(root, id, Action::OptimisticUpdate, observed)?
     };
     let receipt = publish(root, id, client, &intent)?;
     journal::accept(root, id, receipt)?;

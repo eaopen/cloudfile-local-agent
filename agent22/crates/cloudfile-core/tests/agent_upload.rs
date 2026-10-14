@@ -360,3 +360,301 @@ fn deployment_prefix_keeps_origin_bound_proof_and_raw_upload() {
     );
     assert_eq!(client.server, server.origin);
 }
+
+#[test]
+fn automatic_upload_waits_for_stable_latest_bytes_and_continues_after_receipt() {
+    use cloudfile_core::auto_upload::Observer;
+    let (_tmp, root, server, client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    let mut observer = Observer::default();
+    let mut scan = |time| {
+        observer
+            .scan_with(&root, time, |id, hash| {
+                upload::save_observed_with(&root, id, &client, hash)
+            })
+            .unwrap()
+    };
+    scan(0);
+    std::fs::write(&path, b"first intermediate save").unwrap();
+    scan(1_000);
+    std::fs::write(&path, b"final saved content").unwrap();
+    scan(3_000);
+    assert!(server.state.lock().unwrap().uploads.is_empty());
+    scan(6_000);
+    scan(10_000);
+    assert_eq!(
+        server.state.lock().unwrap().uploads,
+        vec![b"final saved content".to_vec()]
+    );
+    std::fs::write(&path, b"").unwrap();
+    scan(11_000);
+    scan(14_000);
+    assert_eq!(
+        server.state.lock().unwrap().uploads,
+        vec![b"final saved content".to_vec(), vec![]]
+    );
+    assert!(cloudfile_core::auto_upload::settings(&root, &task.task_id)
+        .unwrap()
+        .last_synced_at
+        .is_some());
+    assert!(journal::pending(&root, &task.task_id).unwrap().is_none());
+}
+
+#[test]
+fn atomic_editor_replacement_resets_settling_without_overwriting_or_pausing() {
+    use cloudfile_core::auto_upload::{self, Observer};
+    let (_tmp, root, server, client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    let temporary = path.with_extension("tmp");
+    let mut observer = Observer::default();
+    std::fs::write(&path, b"editor first version").unwrap();
+    observer
+        .scan_with(&root, 0, |_, _| panic!("too early"))
+        .unwrap();
+    std::fs::rename(&path, &temporary).unwrap();
+    observer
+        .scan_with(&root, 4_000, |_, _| panic!("missing file must not upload"))
+        .unwrap();
+    std::fs::write(&temporary, b"atomic replacement saved").unwrap();
+    std::fs::rename(&temporary, &path).unwrap();
+    observer
+        .scan_with(&root, 5_000, |_, _| panic!("replacement must settle"))
+        .unwrap();
+    observer
+        .scan_with(&root, 8_000, |id, hash| {
+            upload::save_observed_with(&root, id, &client, hash)
+        })
+        .unwrap();
+    assert_eq!(
+        server.state.lock().unwrap().uploads,
+        vec![b"atomic replacement saved".to_vec()]
+    );
+    assert!(auto_upload::settings(&root, &task.task_id)
+        .unwrap()
+        .pause_reason
+        .is_none());
+}
+
+#[test]
+fn uncertain_automatic_upload_pauses_across_restart_and_never_resends() {
+    use cloudfile_core::auto_upload::{self, Observer};
+    for scenario in ["lost", "conflict", "wrong-receipt", "bad-grant"] {
+        let (_tmp, root, server, client, task) = setup(scenario);
+        let path = session::local_path(&root, &task).unwrap();
+        std::fs::write(&path, b"original automatic snapshot").unwrap();
+        let mut observer = Observer::default();
+        observer
+            .scan_with(&root, 0, |_, _| panic!("must settle"))
+            .unwrap();
+        observer
+            .scan_with(&root, 3_000, |id, hash| {
+                upload::save_observed_with(&root, id, &client, hash)
+            })
+            .unwrap();
+        assert!(auto_upload::settings(&root, &task.task_id)
+            .unwrap()
+            .pause_reason
+            .is_some());
+        let intent = journal::pending(&root, &task.task_id).unwrap().unwrap();
+        let uploaded = server.state.lock().unwrap().uploads.len();
+        std::fs::write(&path, b"later edits must stay local").unwrap();
+        let mut restarted = Observer::default();
+        for time in [10_000, 20_000] {
+            restarted
+                .scan_with(&root, time, |_, _| panic!("paused tasks never retry"))
+                .unwrap();
+        }
+        assert_eq!(server.state.lock().unwrap().uploads.len(), uploaded);
+        assert_eq!(
+            journal::pending(&root, &task.task_id)
+                .unwrap()
+                .unwrap()
+                .intent_id,
+            intent.intent_id
+        );
+        assert_eq!(
+            std::fs::read(
+                path.parent()
+                    .unwrap()
+                    .join(format!("{}.snapshot", intent.intent_id))
+            )
+            .unwrap(),
+            b"original automatic snapshot"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"later edits must stay local"
+        );
+        if scenario == "lost" {
+            assert_eq!(
+                upload::save_with(&root, &task.task_id, &client).unwrap()["state"],
+                "published"
+            );
+            auto_upload::confirmed(&root, &task.task_id).unwrap();
+            restarted
+                .scan_with(&root, 21_000, |_, _| panic!("later edits must settle"))
+                .unwrap();
+            restarted
+                .scan_with(&root, 24_000, |id, hash| {
+                    upload::save_observed_with(&root, id, &client, hash)
+                })
+                .unwrap();
+            assert_eq!(
+                server.state.lock().unwrap().uploads,
+                vec![
+                    b"original automatic snapshot".to_vec(),
+                    b"later edits must stay local".to_vec()
+                ]
+            );
+        }
+    }
+}
+
+#[test]
+fn pause_preference_survives_restart_and_resuming_requires_stability() {
+    use cloudfile_core::auto_upload::{self, Observer};
+    let (_tmp, root, server, client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    auto_upload::set_enabled(&root, &task.task_id, false).unwrap();
+    std::fs::write(&path, b"paused edit").unwrap();
+    let mut restarted = Observer::default();
+    restarted
+        .scan_with(&root, 10_000, |_, _| panic!("disabled"))
+        .unwrap();
+    assert!(!auto_upload::settings(&root, &task.task_id).unwrap().enabled);
+    auto_upload::set_enabled(&root, &task.task_id, true).unwrap();
+    restarted
+        .scan_with(&root, 11_000, |_, _| panic!("must settle after resuming"))
+        .unwrap();
+    restarted
+        .scan_with(&root, 14_000, |id, hash| {
+            upload::save_observed_with(&root, id, &client, hash)
+        })
+        .unwrap();
+    assert_eq!(
+        server.state.lock().unwrap().uploads,
+        vec![b"paused edit".to_vec()]
+    );
+}
+
+#[test]
+fn automatic_upload_does_not_take_over_a_concurrent_manual_intent() {
+    use cloudfile_core::auto_upload::Observer;
+    let (_tmp, root, server, client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    std::fs::write(&path, b"manual intent original").unwrap();
+    let mut observer = Observer::default();
+    observer
+        .scan_with(&root, 0, |_, _| panic!("must settle"))
+        .unwrap();
+    observer
+        .scan_with(&root, 3_000, |id, hash| {
+            let intent = journal::capture(&root, id, journal::Action::OptimisticUpdate).unwrap();
+            std::fs::write(&path, b"newer local edits").unwrap();
+            let result = upload::save_observed_with(&root, id, &client, hash)?;
+            assert_eq!(result["state"], "pending");
+            assert_eq!(
+                journal::pending(&root, id).unwrap().unwrap().intent_id,
+                intent.intent_id
+            );
+            Ok(result)
+        })
+        .unwrap();
+    observer
+        .scan_with(&root, 10_000, |_, _| {
+            panic!("pending intent must not be sent automatically")
+        })
+        .unwrap();
+    assert!(server.state.lock().unwrap().uploads.is_empty());
+    assert_eq!(std::fs::read(path).unwrap(), b"newer local edits");
+}
+
+#[test]
+fn automatic_capture_binds_the_observed_bytes_and_defers_shared_upload_lock() {
+    use cloudfile_core::{auto_upload::Observer, storage};
+    let (_tmp, root, server, client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    std::fs::write(&path, b"observed content").unwrap();
+    let observed = session::digest(&path).unwrap();
+    std::fs::write(&path, b"changed before capture").unwrap();
+    assert_eq!(
+        upload::save_observed_with(&root, &task.task_id, &client, &observed).unwrap()["state"],
+        "changing"
+    );
+    assert!(journal::pending(&root, &task.task_id).unwrap().is_none());
+    let lock = storage::lock(
+        &session::task_dir(&root, &task.task_id)
+            .unwrap()
+            .join("upload.lock"),
+    )
+    .unwrap();
+    let mut observer = Observer::default();
+    observer
+        .scan_with(&root, 0, |_, _| panic!("must settle"))
+        .unwrap();
+    observer
+        .scan_with(&root, 3_000, |id, hash| {
+            upload::save_observed_with(&root, id, &client, hash)
+        })
+        .unwrap();
+    assert!(server.state.lock().unwrap().uploads.is_empty());
+    assert!(cloudfile_core::auto_upload::settings(&root, &task.task_id)
+        .unwrap()
+        .pause_reason
+        .is_none());
+    drop(lock);
+    observer
+        .scan_with(&root, 4_000, |_, _| panic!("must settle again after busy"))
+        .unwrap();
+    observer
+        .scan_with(&root, 7_000, |id, hash| {
+            upload::save_observed_with(&root, id, &client, hash)
+        })
+        .unwrap();
+    assert_eq!(
+        server.state.lock().unwrap().uploads,
+        vec![b"changed before capture".to_vec()]
+    );
+}
+
+#[test]
+fn automatic_upload_rejects_oversize_without_hashing_or_network() {
+    let (_tmp, root, server, _client, task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(device::MAX_FILE + 1)
+        .unwrap();
+    cloudfile_core::auto_upload::Observer::default()
+        .scan_with(&root, 0, |_, _| panic!("oversize"))
+        .unwrap();
+    assert!(cloudfile_core::auto_upload::settings(&root, &task.task_id)
+        .unwrap()
+        .pause_reason
+        .unwrap()
+        .contains("128 MiB"));
+    assert!(journal::pending(&root, &task.task_id).unwrap().is_none());
+    assert!(server.state.lock().unwrap().uploads.is_empty());
+}
+
+#[test]
+fn legacy_and_read_only_tasks_are_never_automatically_uploaded() {
+    let (_tmp, root, server, _client, mut task) = setup("ok");
+    let path = session::local_path(&root, &task).unwrap();
+    std::fs::write(&path, b"changed local copy").unwrap();
+    for mode in ["local-edit", "local-view"] {
+        task.mode = mode.into();
+        task.device_id = None;
+        cloudfile_core::storage::write(&path.parent().unwrap().join("task.json"), &task).unwrap();
+        let mut observer = cloudfile_core::auto_upload::Observer::default();
+        for time in [0, 10_000] {
+            observer
+                .scan_with(&root, time, |_, _| panic!("not authorized"))
+                .unwrap();
+        }
+        assert!(cloudfile_core::auto_upload::set_enabled(&root, &task.task_id, true).is_err());
+    }
+    assert!(server.state.lock().unwrap().uploads.is_empty());
+}

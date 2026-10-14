@@ -159,3 +159,20 @@ fn disabled_edit_capability_is_reported_before_pairing() {
     assert!(!root.join("pairings").exists());
     worker.join().unwrap();
 }
+
+#[test]
+fn adding_origin_again_preserves_the_paired_service_deployment_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    session::trust(&root, "https://files.example.com/seafile/".into()).unwrap();
+    session::trust(&root, "https://files.example.com".into()).unwrap();
+    assert_eq!(
+        session::service_path(&root, "https://files.example.com").unwrap(),
+        "/seafile"
+    );
+    session::trust(&root, "https://files.example.com/other".into()).unwrap();
+    assert_eq!(
+        session::service_path(&root, "https://files.example.com").unwrap(),
+        "/other"
+    );
+}

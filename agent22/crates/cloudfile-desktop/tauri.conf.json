@@ -1,7 +1,7 @@
 {
  "$schema":"https://schema.tauri.app/config/2",
  "productName":"CloudFile Agent 2.2 Dev",
- "version":"2.2.0-alpha.1",
+ "version":"2.2.0-alpha.2",
  "identifier":"com.cloudfile.agent22.dev",
  "build":{"frontendDist":"ui"},
  "app":{"withGlobalTauri":true,"windows":[{"label":"main","title":"CloudFile · 任务中心","width":1000,"height":700,"minWidth":720,"minHeight":480}],"security":{"csp":"default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'"}},
