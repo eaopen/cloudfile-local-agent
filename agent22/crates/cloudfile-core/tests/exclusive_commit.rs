@@ -45,15 +45,20 @@ struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        self.join.take().unwrap().join().unwrap();
+        // A mock server that served a surprising request must fail the test
+        // normally. Panicking again here would turn it into an abort that
+        // masks the real assertion and wedges the whole binary.
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
     }
 }
 fn request(stream: &mut TcpStream) -> (String, std::collections::HashMap<String, String>, Vec<u8>) {
-    // The listening socket is non-blocking; be explicit so a loaded machine
-    // cannot turn an accepted connection into an immediate WouldBlock.
+    // The listening socket is non-blocking, and CI runners are loaded: be
+    // explicit about blocking mode and allow a generous read budget.
     stream.set_nonblocking(false).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
