@@ -7,3 +7,6 @@ license.workspace = true
 cloudfile-core = { path = "../cloudfile-core" }
 anyhow.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

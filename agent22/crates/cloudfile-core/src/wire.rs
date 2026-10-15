@@ -29,6 +29,42 @@ pub enum Request {
         #[serde(default)]
         local_action: String,
     },
+    /// Lightweight version probe the extension repeats periodically.
+    #[serde(rename = "check_update")]
+    CheckUpdate {},
+    /// Explicit user action; the upgrade runs in a detached process because
+    /// Chrome terminates this one as soon as the response is written.
+    #[serde(rename = "update")]
+    Update {},
+    #[serde(rename = "update_extension")]
+    UpdateExtension {},
+    /// Does a working copy exist locally for this repository file?
+    #[serde(rename = "query_local_file")]
+    QueryLocalFile {
+        repo_id: String,
+        path: String,
+        #[serde(default)]
+        mode: String,
+    },
+    #[serde(rename = "query_local_folder")]
+    QueryLocalFolder {
+        repo_id: String,
+        #[serde(default)]
+        mode: String,
+    },
+    /// Opens the directory that holds working copies, never a browser path.
+    #[serde(rename = "open_workspace")]
+    OpenWorkspace {
+        #[serde(default)]
+        repo_id: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        mode: String,
+    },
+    /// Compatibility entry for a downloaded `.cloudfile` handoff file.
+    #[serde(rename = "open_session_file")]
+    OpenSessionFile { path: String },
 }
 pub fn read<R: Read>(input: &mut R) -> Result<Option<Value>> {
     let mut header = [0; 4];
@@ -55,8 +91,13 @@ pub fn write<W: Write>(output: &mut W, response: &Value) -> Result<()> {
     output.flush()?;
     Ok(())
 }
-pub fn status() -> Value {
-    json!({"ok":true,"version":"2.2.0","build_version":crate::VERSION,"agent_family":"agent2", "platform":std::env::consts::OS,"capabilities":["open_session","open_uri","task_summary","focus_task"],"release_channel":"development"})
+/// Minimal status used only when the agent store cannot be read. It reports no
+/// capability, so the extension falls back to its documented degraded path
+/// instead of assuming a feature that could not be checked.
+pub fn degraded_status(reason: &str) -> Value {
+    json!({"ok":false,"error":reason,"version":"2.2.0","build_version":crate::VERSION,
+        "agent_family":"agent2","platform":std::env::consts::OS,"capabilities":[],
+        "release_channel":"development"})
 }
 pub fn error(code: &str) -> Value {
     json!({"ok":false,"error":code})

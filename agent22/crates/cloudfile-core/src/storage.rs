@@ -42,6 +42,19 @@ pub fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
+/// Atomic byte write for payloads that are already serialized (for example a
+/// manifest copied verbatim during a rollback).
+pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("missing parent")?;
+    private_dir(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
 pub fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.len() > 1024 * 1024 {
@@ -69,4 +82,14 @@ pub fn lock(path: &Path) -> Result<fs::File> {
         .open(path)?;
     fs2::FileExt::try_lock_exclusive(&file).context("another operation is active")?;
     Ok(file)
+}
+
+/// Test-only root. The private store rejects symlinked ancestors, and the
+/// platform temporary directory is itself reached through one on macOS, so the
+/// canonical path is what the tests must use.
+#[cfg(test)]
+pub fn test_root() -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    (directory, root)
 }

@@ -15,6 +15,16 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     #[serde(default)]
     pub service_paths: std::collections::BTreeMap<String, String>,
+    /// Signed release origin. Both this and the key must be set before an
+    /// update can be offered; one without the other is never enough.
+    #[serde(default)]
+    pub update_source: Option<String>,
+    /// Base64url of the pinned uncompressed P-256 release key.
+    #[serde(default)]
+    pub update_public_key: Option<String>,
+    /// Local unpacked extension copy, used only to report its version.
+    #[serde(default)]
+    pub extension_dir: Option<String>,
 }
 #[derive(Deserialize)]
 pub struct Claimed {
@@ -112,6 +122,42 @@ pub fn config(root: &Path) -> Result<Config> {
         return Ok(Config::default());
     }
     storage::read(&p)
+}
+/// Configures (or clears) the signed update source. Setting a source without a
+/// pinned key would make verification impossible, so both move together.
+pub fn set_update(
+    root: &Path,
+    source: Option<String>,
+    public_key: Option<String>,
+    extension_dir: Option<String>,
+) -> Result<()> {
+    for value in [&source, &public_key, &extension_dir].into_iter().flatten() {
+        if value.len() > 4096 || value.contains('\0') {
+            bail!("invalid update configuration");
+        }
+    }
+    if let Some(value) = &source {
+        crate::update::valid_source(value)
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("update source must be a canonical https origin"))?;
+        crate::update::verifying_key(
+            public_key
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("a pinned release key is required"))?,
+        )?;
+    } else if public_key.is_some() {
+        // A key that can never be used would only hide a caller mistake: say so
+        // instead of storing a half-configured update channel.
+        bail!("an update key requires an update source");
+    }
+    let _lock = storage::lock(&root.join("config.lock"))?;
+    let mut cfg = config(root)?;
+    cfg.update_source = source;
+    cfg.update_public_key = public_key;
+    cfg.extension_dir = extension_dir;
+    // Reaching here the pair is either both set or both clear, so a bare write
+    // is enough — there is no half-configured state to normalise away.
+    storage::write(&root.join("config.json"), &cfg)
 }
 pub fn task_id(raw: &str) -> bool {
     raw.len() == 64
@@ -313,25 +359,13 @@ pub fn open_session(root: &Path, request: Request) -> Result<Task> {
     storage::write(&dir.join("task.json"), &task)?;
     Ok(task)
 }
+/// Hands the working copy to a local application. Precedence is an explicit
+/// user rule, then a detected application, then the OS default for known
+/// document types; an unknown type is never launched implicitly.
 pub fn launch(root: &Path, id: &str) -> Result<()> {
     let task = load(root, id)?;
     let path = local_path(root, &task)?;
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if ![
-        "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
-        "csv", "rtf", "png", "jpg", "jpeg", "gif", "tif", "tiff", "bmp", "dwg", "dxf", "step",
-        "stp", "iges", "igs", "sldprt", "sldasm", "slddrw",
-    ]
-    .contains(&ext.as_str())
-    {
-        bail!("file type requires a locally configured application");
-    }
-    open::that(path)?;
-    Ok(())
+    crate::apps::open_path(root, &task.mode, &task.file_name, &path)
 }
 #[cfg(test)]
 mod tests {

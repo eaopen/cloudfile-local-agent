@@ -24,7 +24,8 @@ for name in ['cloudfile-native-host','cloudfile-desktop']:
  shutil.copy2(root/'target/release'/name,binary_dir/name)
 if sys.platform=='darwin':
  subprocess.run(['codesign','--force','--deep','--sign','-',str(app)],check=True)
-shutil.copy2(root/'scripts/register-host.py',stage/'register-host.py')
+# Registration, autostart, upgrade and revert are all performed by the shipped
+# binaries, so the archive contains no scripting runtime for the user to run.
 shutil.copy2(root/'README.md',stage/'README.md')
 archive=stage.with_suffix('.zip')
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:

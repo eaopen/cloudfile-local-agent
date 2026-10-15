@@ -1,1 +1,100 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CloudFile 任务中心</title><link rel="stylesheet" href="style.css"></head><body><aside><div class="brand">◈ CloudFile</div><div class="badge">AGENT 2.2 · 开发版</div><nav>本地任务</nav><p>文件留在本机。<br>任务随时可见。</p></aside><main><header><div><small>工作区</small><h1>本地任务</h1></div><button id="refresh">刷新任务</button></header><div class="notice">普通本地编辑：在本地应用保存后，Agent 会在文件内容稳定后自动上传，可暂停或点击“保存云端”立即提交。独占编辑：从网页发起后由 Agent 领取 Checkout 租约，由你点击“提交”保留 Checkout，或“签入并释放”结束本次独占；提交结果未确认前不会自动重发，本地文件始终保留。两种模式每次最多 128 MiB。</div><section id="tasks" aria-live="polite"></section><section class="settings"><h2>受信任的 CloudFile 服务</h2><p>仅允许这些服务发起文件会话。请确认地址属于你的组织。</p><form id="trust"><input id="origin" type="url" required placeholder="https://files.example.com" aria-label="CloudFile 服务地址"><button>添加服务</button></form><ul id="origins"></ul></section><p id="message" role="status"></p></main><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CloudFile 任务中心</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside>
+  <div class="brand">◈ CloudFile</div>
+  <div class="badge">AGENT 2.2 · 开发版</div>
+  <nav>本地任务</nav>
+  <p>文件留在本机。<br>任务随时可见。</p>
+  <div class="aside-actions">
+    <button id="refresh">刷新任务</button>
+    <button id="open-workspace" class="secondary">打开工作目录</button>
+  </div>
+  <div class="version" id="version"></div>
+  <div class="version" id="exit-state"></div>
+</aside>
+<main>
+  <header>
+    <div><small>工作区</small><h1>本地任务</h1></div>
+    <div class="counts" id="counts"></div>
+  </header>
+
+  <div id="confirm-exit" class="banner danger" hidden>
+    <strong>仍有独占编辑任务或未确认的上传。</strong>
+    <p id="confirm-exit-text"></p>
+    <p class="hint">退出会停止后台续租，但不会释放 Checkout，也不会删除本地工作副本与待确认的 Intent。</p>
+    <div class="row">
+      <button id="exit-cancel">继续运行</button>
+      <button id="exit-force" class="secondary">仍然退出</button>
+    </div>
+  </div>
+
+  <div id="update-hint" class="banner" hidden>
+    <strong id="update-title"></strong>
+    <p id="update-notes"></p>
+    <div class="row">
+      <button id="update-apply" class="secondary">下载并升级</button>
+      <button id="update-dismiss" class="secondary">稍后</button>
+    </div>
+  </div>
+
+  <div class="notice">
+    普通本地编辑：在本地应用保存后，Agent 会在文件内容稳定后自动上传，可暂停或点击“保存云端”立即提交。
+    独占编辑：从网页发起后由 Agent 领取 Checkout 租约，由你点击“提交”保留 Checkout，或“签入并释放”结束本次独占；
+    提交结果未确认前不会自动重发，本地文件始终保留。两种模式每次最多 128 MiB。
+  </div>
+
+  <section id="tasks" aria-live="polite"></section>
+
+  <section class="panel">
+    <h2>本机设置</h2>
+    <p class="hint">这些是本机偏好，不是授权：改通知或浮标都不会上传文件，也不会释放 Checkout。</p>
+    <form id="settings">
+      <label class="check"><input type="checkbox" id="notify_on_saved"> 保存后显示轻提示</label>
+      <label class="check"><input type="checkbox" id="notify_on_review"> 需要检查时用警告提示</label>
+      <label class="check"><input type="checkbox" id="float_enabled"> 显示可拖动悬浮入口</label>
+      <label class="check"><input type="checkbox" id="float_hidden_when_empty"> 没有本地任务时隐藏悬浮入口</label>
+      <label class="check"><input type="checkbox" id="autostart"> 登录时启动 Agent（可选）</label>
+      <label class="field">工作区目录（留空使用 Agent 私有目录）
+        <input id="workspace_root" type="text" placeholder="例如 /Users/you/CloudFile">
+      </label>
+      <button>保存设置</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>受信任的 CloudFile 服务</h2>
+    <p class="hint">仅允许这些服务发起文件会话。请确认地址属于你的组织。</p>
+    <form id="trust">
+      <input id="origin" type="url" required placeholder="https://files.example.com" aria-label="CloudFile 服务地址">
+      <button>添加服务</button>
+    </form>
+    <ul id="origins"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>Chrome 开发注册与升级</h2>
+    <p class="hint">注册由 Agent 自己完成，不需要目标机器安装 Python。开发注册使用隔离的 Host，不会替换正式 Host。</p>
+    <p id="host-state" class="hint"></p>
+    <form id="register">
+      <input id="extension-id" type="text" placeholder="Chrome 扩展 ID（32 位 a-p）" aria-label="扩展 ID">
+      <button>注册 Host</button>
+    </form>
+    <div class="row">
+      <button id="host-rollback" class="secondary">回退 Host 注册</button>
+      <button id="host-unregister" class="secondary">卸载本机 Host</button>
+      <button id="check-update" class="secondary">检查升级</button>
+    </div>
+  </section>
+
+  <p id="message" role="status"></p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

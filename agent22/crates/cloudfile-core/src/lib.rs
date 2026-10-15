@@ -1,7 +1,14 @@
+pub mod apps;
+pub mod autostart;
+pub mod guard;
+pub mod hostreg;
 pub mod ipc;
 pub mod journal;
+pub mod native;
 pub mod session;
+pub mod settings;
 pub mod storage;
+pub mod update;
 pub mod wire;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

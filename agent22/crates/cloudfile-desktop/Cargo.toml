@@ -10,4 +10,6 @@ cloudfile-core = { path = "../cloudfile-core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = ["tray-icon"] }
+# `macos-private-api` is required by the transparent float/toast windows and is
+# a no-op on Windows/Linux (the feature only forwards to an empty flag).
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }

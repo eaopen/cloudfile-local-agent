@@ -398,6 +398,7 @@ dependencies = [
  "anyhow",
  "cloudfile-core",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

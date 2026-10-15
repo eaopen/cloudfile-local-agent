@@ -77,6 +77,11 @@ fn load(dir: &Path) -> Result<Journal> {
     }
     Ok(j)
 }
+/// Whole durable state in one read, so an exit assessment cannot observe a
+/// torn mix of fields from two different reads of the same journal.
+pub fn snapshot(root: &Path, id: &str) -> Result<Journal> {
+    load(&session::task_dir(root, id)?)
+}
 pub fn pending(root: &Path, id: &str) -> Result<Option<Intent>> {
     Ok(load(&session::task_dir(root, id)?)?.pending)
 }
