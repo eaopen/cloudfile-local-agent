@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use crate::storage;
-#[cfg(target_os = "macos")]
+// Both login-item back ends report a failed spawn through `context`, so the
+// trait must be in scope on either platform, not only macOS.
+#[cfg(any(target_os = "macos", windows))]
 use anyhow::Context;
 
 pub const MACOS_LABEL: &str = "com.cloudfile.agent22.autostart";
