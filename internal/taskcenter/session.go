@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/device"
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 )
 
 // VerifiedSession is created in-process only AFTER signed device claim,
@@ -142,7 +143,7 @@ func (s *Store) readVerifiedSession(id string) (sessionRecord, error) {
 	if err != nil {
 		return r, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() <= 0 || info.Size() > maxRecordSize {
+	if !info.Mode().IsRegular() || !fsaccess.Private(info) || info.Size() <= 0 || info.Size() > maxRecordSize {
 		return r, ErrCorrupt
 	}
 	data, err := os.ReadFile(s.filename(id))

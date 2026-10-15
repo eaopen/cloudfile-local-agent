@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
+	"github.com/eaopen/cloudfile-local-agent/internal/childproc"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/home"
 	"github.com/eaopen/cloudfile-local-agent/internal/launch"
@@ -23,7 +24,11 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
-const version = "2.0.3"
+// version is a var, not a const, so a test build can override it at link time
+// (-ldflags "-X main.version=2.0.4"). The dev release channel needs a build
+// whose reported version is higher than the installed one, otherwise the
+// update path can never be exercised locally. Production builds leave it alone.
+var version = "2.0.3"
 
 func main() {
 	inspectLocal := flag.Bool("inspect-local-task-stdin", false, "private same-user local task info for the original desktop controller")
@@ -263,7 +268,6 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Upgrade with --check-update / --update / --update-extension.")
 }
 
-// Windows bundles Go as an internal child of the single .NET Host.
 // Do not advertise network session actions before an explicit trusted origin
 // exists. The controller delegates only advertised operations.
 func advertisedCapabilities(trustedOrigins []string) []string {
@@ -309,15 +313,18 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 			}
 			describeAgentUpdate(agentConfig, &response)
 			describeExtensionUpdate(agentConfig, &response)
-			// macOS Go is the registered Chrome Host; Windows retains .NET.
-			if runtime.GOOS == "darwin" {
-				if root, err := agentConfig.Root(); err == nil {
-					if store, err := taskcenter.New(root); err == nil {
-						if _, err := store.List(); err == nil {
-							response.Capabilities = append(response.Capabilities, "task_summary")
-							if store.ResidentOnline(time.Now()) {
-								response.Capabilities = append(response.Capabilities, "focus_task")
-							}
+			// Task summary and focus are advertised only where they actually
+			// work: the store has to open and list, and focus additionally needs
+			// a live resident.  Self-verifying rather than platform-gated, so a
+			// host that cannot use the TaskCenter never advertises it.  (The
+			// component protocol in component.go advertises the same pair and
+			// has never been platform-gated.)
+			if root, err := workspace.Resolve(agentConfig); err == nil {
+				if store, err := taskcenter.New(root); err == nil {
+					if _, err := store.List(); err == nil {
+						response.Capabilities = append(response.Capabilities, "task_summary")
+						if store.ResidentOnline(time.Now()) {
+							response.Capabilities = append(response.Capabilities, "focus_task")
 						}
 					}
 				}
@@ -325,14 +332,14 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		}
 		return response
 	case "focus_task":
-		if !request.Valid() || runtime.GOOS != "darwin" {
+		if !request.Valid() {
 			return nativehost.Response{Error: "invalid local focus request"}
 		}
 		cfg, err := config.Load()
 		if err != nil {
 			return nativehost.Response{Error: "local task configuration unavailable"}
 		}
-		root, err := cfg.Root()
+		root, err := workspace.Resolve(cfg)
 		if err != nil {
 			return nativehost.Response{Error: "local task workspace unavailable"}
 		}
@@ -342,14 +349,14 @@ func handleNativeMessage(request nativehost.Request) nativehost.Response {
 		}
 		return nativehost.Response{OK: true}
 	case "task_summary":
-		if !request.Valid() || runtime.GOOS != "darwin" {
-			return nativehost.Response{Error: "local task summary unsupported"}
+		if !request.Valid() {
+			return nativehost.Response{Error: "invalid local task summary request"}
 		}
 		cfg, err := config.Load()
 		if err != nil {
 			return nativehost.Response{Error: "local task configuration unavailable"}
 		}
-		root, err := cfg.Root()
+		root, err := workspace.Resolve(cfg)
 		if err != nil {
 			return nativehost.Response{Error: "local task workspace unavailable"}
 		}
@@ -615,6 +622,8 @@ func openDirectory(path string) error {
 	default:
 		command = exec.Command("xdg-open", path)
 	}
+	// 宿主没有控制台，不设这个标记的话每开一次目录就闪一个黑框。
+	childproc.Hide(command)
 	return command.Start()
 }
 
@@ -820,8 +829,9 @@ func logUpdate(format string, args ...any) {
 	fmt.Fprintf(file, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 }
 
-// macOS releases require a locally pinned signing key. Windows uses its .NET
-// bundle updater; legacy Unix compatibility is kept separate.
+// macOS releases require a locally pinned signing key; every other platform
+// reads the plain update.json plus its sha256 (Windows included, since the
+// signed .NET bundle updater was retired).
 func fetchAgentRelease(cfg config.Config, timeout time.Duration) (*update.Manifest, error) {
 	if runtime.GOOS == "darwin" {
 		return update.FetchSigned(cfg.UpdateSource, cfg.UpdatePublicKey, timeout)

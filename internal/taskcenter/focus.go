@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 )
 
 const focusTTL = 12 * time.Second
@@ -24,7 +26,7 @@ func (s *Store) ResidentOnline(now time.Time) bool {
 }
 func (s *Store) online(now time.Time) bool {
 	info, err := os.Lstat(filepath.Join(s.dir, "resident-heartbeat"))
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.Mode().IsRegular() || !fsaccess.Private(info) {
 		return false
 	}
 	age := now.Sub(info.ModTime())
@@ -88,7 +90,7 @@ func (s *Store) PollFocus(now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 1024 {
+	if !info.Mode().IsRegular() || !fsaccess.Private(info) || info.Size() > 1024 {
 		return "", ErrCorrupt
 	}
 	data, err := os.ReadFile(file)

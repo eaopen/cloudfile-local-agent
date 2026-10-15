@@ -37,8 +37,20 @@ type Record struct {
 	StoredAt int64  `json:"stored_at"`
 }
 
-func Resolve(cfg config.Config) (string, error) { return cfg.Root() }
-func validMode(mode string) bool                { return mode == ModeEdit || mode == ModeView }
+// Resolve returns the mirror root for use, carrying an existing mirror over
+// when the resolved root has changed (see Adopt).  A failed move is
+// deliberately not an error: the caller continues against the resolved root
+// and the files stay where they were, which is always better than refusing to
+// open a session.
+func Resolve(cfg config.Config) (string, error) {
+	root, err := cfg.Root()
+	if err != nil {
+		return "", err
+	}
+	_, _ = Adopt(root)
+	return root, nil
+}
+func validMode(mode string) bool { return mode == ModeEdit || mode == ModeView }
 
 // RelPath validates a canonical Seafile library path. Local mirrors are
 // intentionally flat, so only the last file name becomes a disk entry.

@@ -8,6 +8,7 @@ import (
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/launch"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
 // Called after confirmed pairing, signed read and successful local application
@@ -18,7 +19,7 @@ func registerPairedMacTask(instance, deviceID, sessionID, mode, baseFileID, copy
 	if err != nil {
 		return err
 	}
-	root, err := cfg.Root()
+	root, err := workspace.Resolve(cfg)
 	if err != nil {
 		return err
 	}

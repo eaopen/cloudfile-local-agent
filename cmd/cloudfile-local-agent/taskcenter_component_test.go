@@ -13,9 +13,7 @@ import (
 )
 
 func TestWindowsComponentTaskSummaryReturnsOnlySafeLocalMetadata(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	isolateUserConfig(t)
 	root := t.TempDir()
 	if err := config.Save(config.Config{
 		AllowedOrigins: []string{"https://files.example.test"},

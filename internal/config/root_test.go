@@ -5,8 +5,8 @@ import "testing"
 // The preference order lives entirely in selectRoot, so a fake probe is enough
 // to pin it without depending on which drives the test machine happens to have.
 func TestSelectRootKeepsPreferenceOrderAndFallsBack(t *testing.T) {
-	preferred := []string{`D:\CloudFileLocal\sessions`, `E:\CloudFileLocal\sessions`}
-	fallback := `C:\Users\me\AppData\Local\CloudFileLocal\sessions`
+	preferred := []string{`D:\CloudFileAgent2\workspace`, `E:\CloudFileAgent2\workspace`}
+	fallback := `C:\Users\me\AppData\Roaming\CloudFileAgent2\workspace`
 
 	none := func(string) bool { return false }
 	if got := selectRoot(preferred, fallback, none); got != fallback {
@@ -26,7 +26,7 @@ func TestSelectRootKeepsPreferenceOrderAndFallsBack(t *testing.T) {
 
 // No candidates means no probing, which is what macOS and Linux rely on.
 func TestSelectRootWithoutCandidatesUsesFallback(t *testing.T) {
-	fallback := "/home/me/.cache/CloudFileLocal/sessions"
+	fallback := "/home/me/.config/CloudFileAgent2/workspace"
 	called := false
 	probe := func(string) bool { called = true; return true }
 	if got := selectRoot(nil, fallback, probe); got != fallback {

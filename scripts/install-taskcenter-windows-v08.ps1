@@ -100,7 +100,10 @@ switch ($Action) {
                 if ($previous -and $previous -ne $runCommand) {
                     Write-Warning 'Different current-user startup entry exists; leaving it unchanged.'
                 } else {
-                    New-Item -Path $runKey -Force -ErrorAction Stop | Out-Null
+                    # 不要用 New-Item -Force：PS 5.1 在注册表上把 -Force 当「删掉重建」，
+                    # 而 CurrentVersion\Run 是 Windows 保护的键（禁止删除），会报
+                    # UnauthorizedAccessException。键在就只写值。
+                    if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force -ErrorAction Stop | Out-Null }
                     New-ItemProperty -Path $runKey -Name $runName -PropertyType String -Value $runCommand -Force -ErrorAction Stop | Out-Null
                     Write-Output 'Optional current-user autostart enabled.'
                 }

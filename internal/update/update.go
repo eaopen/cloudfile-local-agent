@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eaopen/cloudfile-local-agent/internal/childproc"
 	"github.com/eaopen/cloudfile-local-agent/internal/home"
 )
 
@@ -384,6 +385,8 @@ func (b *boundedOutput) Write(data []byte) (int, error) {
 }
 func candidateOutput(ctx context.Context, path string, input []byte, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, path, args...)
+	// 被探测的候选二进制是控制台程序，宿主没有控制台时不设这个标记就会闪黑框。
+	childproc.Hide(command)
 	command.Stdin = bytes.NewReader(input)
 	var output boundedOutput
 	command.Stdout = &output

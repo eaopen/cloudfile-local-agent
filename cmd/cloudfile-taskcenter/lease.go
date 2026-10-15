@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/eaopen/cloudfile-local-agent/internal/childproc"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/device"
 	"github.com/eaopen/cloudfile-local-agent/internal/editing"
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
 )
 
@@ -40,7 +42,7 @@ func activeJournal(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+	if !info.Mode().IsRegular() || !fsaccess.Private(info) {
 		return false, errors.New("private journal required")
 	}
 	state, err := journal.Load()
@@ -95,6 +97,7 @@ func signedChildRenew(ctx context.Context, core string, s taskcenter.VerifiedSes
 	childCtx, cancel := context.WithTimeout(ctx, 65*time.Second)
 	defer cancel()
 	p := exec.CommandContext(childCtx, core, "--renew-checkout-stdin")
+	childproc.Hide(p)
 	p.Stdin = bytes.NewReader(payload)
 	// The signed renewal response is tiny. It must never be logged or sent
 	// through Chrome. A failed call is NOT permission to release Checkout.

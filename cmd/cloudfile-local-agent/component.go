@@ -193,7 +193,7 @@ func componentResult(data []byte) (any, error) {
 		if err != nil || len(cfg.AllowedOrigins) == 0 {
 			return nil, fmt.Errorf("trusted local component required")
 		}
-		root, err := cfg.Root()
+		root, err := workspace.Resolve(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -213,7 +213,7 @@ func componentResult(data []byte) (any, error) {
 		if err != nil || len(cfg.AllowedOrigins) == 0 {
 			return nil, fmt.Errorf("trusted local component required")
 		}
-		root, err := cfg.Root()
+		root, err := workspace.Resolve(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -252,7 +252,7 @@ func componentResult(data []byte) (any, error) {
 		}
 		if request.Type == "status" {
 			if len(cfg.AllowedOrigins) > 0 {
-				if root, err := cfg.Root(); err == nil {
+				if root, err := workspace.Resolve(cfg); err == nil {
 					if store, err := taskcenter.New(root); err == nil {
 						if _, err := store.List(); err == nil {
 							capabilities = append(capabilities, "task_summary")

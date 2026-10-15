@@ -21,7 +21,93 @@ go build -trimpath -ldflags="-s -w" -o dist/cloudfile-local-agent ./cmd/cloudfil
 ./dist/cloudfile-local-agent --allow-origin https://cloudfile.example
 ```
 
-Windows 使用 `eap-cloudfile/agent` 构建的 .NET + Go 统一绿色包，由包内 `scripts/register-native-host.ps1` 注册唯一 Host；本仓库 dev 的独立 Windows Go 安装脚本已停用。macOS 使用 `scripts/register-agent2-macos.sh`。均无需管理员权限或预装运行时，不开放 localhost HTTP 服务。
+Windows 与 macOS 现在**共用同一份 Go 代码**：Windows 由 `scripts/register-agent2-windows.ps1` 注册
+Native Host `com.cloudfile.agent2`（用户侧的入口是 `scripts/install-agent2-windows.cmd`，双击即可），
+macOS 由 `scripts/register-agent2-macos.sh` 注册同名 Host。
+`eap-cloudfile/agent` 那套 .NET + Go 统一包（Host `com.cloudfile.current_agent`）自 2026-10-14 起
+**不再交付**（Windows GUI/托盘、CNG 设备签名、设备配对都没有当前交付需求）；
+`scripts/register-windows.ps1`（Host `com.cloudfile.local_agent`）只用于兼容更老的 Go 1.x 会话。
+均无需管理员权限、无需预装运行时，不开放 localhost HTTP 服务。
+
+## Windows 测试版（`cloudfile-updates-dev` 通道，2026-10-14）
+
+现阶段**默认发布的是测试版，正式版暂不发版**。生产与测试靠路径区分：同一个 host，
+正式是 `cloudfile-updates/`，测试是 `cloudfile-updates-dev/`，**正式通道的产物一个字节都不动**。
+整条链路只需要 `go`（不再需要 dotnet/docker）：
+
+| 环节 | 位置 / 命令 |
+| --- | --- |
+| 编译 + 打包 + 清单 | `cloudfile-release\tools\dev-release\make-dev-release.ps1 -Version 2.0.4`（输出到 `cloudfile-release\cloudfile-updates-dev\`，与服务器目录同名） |
+| 发布 | 把上面那个目录的**全部文件原样上传**到服务器的 `cloudfile-updates-dev\` |
+| 安装（给用户） | 双击通道里的 **`install.cmd`**：它下载 `register-agent2-windows.ps1` 再调用它。用户不需要先拿到 exe |
+| 注册 / 离线安装 | `.\scripts\register-agent2-windows.ps1`（**不给 exe = 从更新源现下 + 校验 sha256**；给本地 exe = 绿色包离线安装） |
+| 托盘 / 任务中心 | 注册脚本顺带装上 `cloudfile-taskcenter.exe`（CLI，任务状态的唯一权威）+ `cloudfile-taskcenter-ui.exe`（托盘 UI），写 HKCU 开机自启并立刻启动 —— 进托盘、不弹窗口。`-SkipTaskCenter` 可以不要托盘 |
+| 本机离线自测（可选） | `cloudfile-release\tools\dev-release\serve-dev.ps1` → `http://127.0.0.1:80/cloudfile-updates-dev/`（路径形状与线上一致，只换 host；同级 `dev-keys/` 与正式通道一律 404） |
+
+约定：
+
+- `install.cmd` 是 **GBK + CRLF + 无 BOM**（cmd 默认代码页就是 936）：转成 UTF-8 中文会乱码，
+  转成 LF 的 `.cmd` 在 cmd 里会逐行报错。与 `install.cmd` 同级的 `register-agent2-windows.ps1`
+  是 **UTF-8 with BOM + CRLF**（PS 5.1 靠 BOM 识别）。
+- `install.cmd` 里只有 `set "CHANNEL=cloudfile-updates-dev"` 一行区分生产与测试，
+  两个基址（门户域名主源 / 静态服务 IP 备源）由它拼出；主源不通会自动改用备源，
+  并把**实际可用的那个基址**交给注册脚本写进 `update_source`（那台机器以后的自动升级才通）。
+- 测试更新源 `http://etech.stcetech.ad01.sec.com/cloudfile-updates-dev/update.json`，
+  扩展清单是同目录的 `extension-update.json`。个别机器解析不了门户域名时，可显式传
+  IP 备源 `-UpdateSource http://10.9.8.162:6111/cloudfile-updates-dev/update.json`（内容一致）。
+- 清单里的 `download_url` / `zip_url` 写**相对文件名**：`update.resolveDownloadURL` 会按清单
+  URL 解析，于是命中域名还是 IP、走生产还是测试，都由 `update_source` 一处决定，清单不用跟着改。
+- Windows 走 `update.FetchCached`：普通 `update.json` + sha256，**不验签**（签名的 `FetchSigned` 只用于 macOS）。
+- 归档名带 `-dev`，但 `version` 字段保持 `x.y.z` 纯数字 —— `parseVersion` 只认三段数字，
+  扩展的 `manifest.version` 还受 Chrome 的格式限制（同样只能数字）。
+- **扩展侧也跟同一通道**：`cloudfile-chrome-extension/background.js` 顶部的 `UPDATE_CHANNEL`
+  （`'dev'`/`'prod'`）决定直连兜底的清单地址；它和 `$DevUpdateSource` 是同一节路径，
+  正式发版时同样只改那一行。popup 的帮助页路径拼在**当前网盘页面的 origin** 上、由门户提供，
+  与通道无关，刻意不切。
+- **子进程一律 `CREATE_NO_WINDOW`**（`internal/childproc.Hide`）：本程序多数时候由 Chrome 当
+  native messaging host 起，宿主没有控制台；此时启动任何**控制台程序**都会给子进程新开一个
+  控制台黑框。曾经的现场故障就是 App Paths 探测用 `reg.exe` 查注册表 —— 16 个应用 × 3 个键
+  = **48 次进程启动**，用户看到"啪啪啪一堆黑窗口"，而 native host 是每条消息一个新进程，
+  所以每次操作都会重演。现在改用 `internal/winreg`（advapi32 的 `RegOpenKeyExW` /
+  `RegQueryValueExW`，进程内直读）—— 零进程、零窗口，单次探测从 0.7~1.6 秒降到 **5ms**。
+- **托盘提示走本地通知队列**：Agent 打开本地副本后往 `%AppData%\CloudFileAgent2\ui-notify.jsonl`
+  追加一行（`internal/uinotify`），托盘 UI 每 3 秒读增量并弹气泡「已本地打开 xxx.docx + 本地目录」。
+  不用端口/管道：host 是短命进程、UI 常驻，两者唯一的稳定公共点就是一个小文件；UI 启动时跳过历史，
+  文件超过 64KB 就地压缩，所以它是通知队列而不是审计日志。
+- **要验证扩展更新，发布版本必须高于已装版本**（扩展比的就是这两个版本号）。
+  `make-dev-release.ps1 -ExtensionVersion 1.0.4` 可以**只抬包内版本**：它把 zip 里的
+  `manifest.json` 与 `extension-update.json` 一起改成该值，仓库 `manifest.json` 不动，
+  省掉「改仓库 → 发版 → 回滚」的来回。注意抬过之后，下次不带该参数会发回仓库版本（低于已装版本，
+  扩展就不再提示更新）。
+- 更新器要求候选 exe 的 `--version` 与清单**完全相等**（`update.CheckExecutable`），所以 dev 构建用
+  `-ldflags "-X main.version=x.y.z"` 注入版本号 —— `cmd/cloudfile-local-agent/main.go` 的 `version`
+  因此是 `var` 而非 `const`。
+- 扩展 zip 必须由 `cloudfile-chrome-extension/scripts/make_zip.py` 产出：
+  **PowerShell 5.1 的 `Compress-Archive` 会把条目名写成反斜杠**（`icons\icon16.png`），
+  那是非法 ZIP 分隔符，Go 解包时会判 `invalid extension archive path` —— 扩展更新在 Windows 上会永远装不上。
+- 正式发版时把 `register-agent2-windows.ps1` 顶部的 `$DevUpdateSource` 改回 `.../cloudfile-updates/update.json` 即可，其余逻辑不变。
+
+Windows Go 主控现在**也宣告 `task_summary` 与 `focus_task`**：这两个能力改成**自我验证式** ——
+store 能打开并列出才宣告 `task_summary`，另需有在线驻留进程才宣告 `focus_task`，不再按平台门禁。
+（此前只有这条原生消息路径按 macOS 门禁，`component.go` 的组件协议一直没有门禁，两边现已一致。）
+`open_uri` 仍然只属于 macOS 的 Keychain 配对流程，保持门禁。
+
+Windows 的**托盘/任务中心 UI 也已用 Go 重做**：`cmd/cloudfile-taskcenter-ui`（纯标准库 +
+直接调 user32/shell32/gdi32/comctl32，没有第三方 GUI 库，也不需要 .NET）。托盘 + 任务窗口 +
+可拖动吸边浮标 + 3 秒刷新 + 保存气泡，与 `windows/taskcenter-preview/` 里的 WinForms
+**参考实现**行为对齐；它和参考实现一样把 Go CLI 当任务状态的唯一权威（子进程读 JSON），
+所以不是第二个 Native Host、也不注册任何东西。GUI 没法自动化验收，因此留了 `--self-test`
+冒烟入口（建窗口/托盘 → 往列表控件写行再回读 → 真跑一次 `--list` → 检查通知队列可读 → 自退出），
+构建方式与退出码见 `windows/taskcenter-preview/README.md`。
+
+**它是怎么被装上并跑起来的**（2026-10-14 补齐）：`register-agent2-windows.ps1` 会从同一个通道
+取 `taskcenter-update.json`（含两个 exe 的 sha256），把 `cloudfile-taskcenter.exe` 与
+`cloudfile-taskcenter-ui.exe` 装到 `<安装根>\bin\`，写一条 HKCU Run 自启，并**立刻启动 UI**
+（启动即进托盘、不弹窗口；首次运行弹一条「已在托盘运行」说明气泡）。此前这两个 exe 既没被发版
+也没人启动，用户测完的结论正是「右下角没有托盘、也看不到 UI 界面」。
+UI 的 exe 必须用 `-ldflags "-H=windowsgui"` 编（`make-dev-release.ps1` 已经这么做）：
+它是托盘程序，一启动就弹控制台黑框是最不该发生的事。
+打开本地副本后的提示走 `internal/uinotify`（见上文「托盘提示走本地通知队列」）。
 
 ## 本地查看与编辑规则
 
@@ -36,15 +122,15 @@ DraftSight、Revit、SOLIDWORKS、Creo、NX、CATIA、SketchUp、Rhino 和 FreeC
 CAD/三维格式。Windows 优先检查用户/机器注册的 `App Paths`，再检查常见安装目录与可执行文件；
 不读取浏览器数据，也不从服务端接收软件路径。
 
-只有需要指定特定专业软件或覆盖默认顺序时才加入 `open_rules`。规则保存于当前用户的 Agent 配置文件：Windows 为
-`%AppData%\\CloudFileLocal\\config.json`，macOS/Linux 使用系统用户配置目录下的
-`CloudFileLocal/config.json`。先用安装脚本或 `--allow-origin` 创建信任 origin，再按需要
-加入 `open_rules`；`--validate-config` 可在不启动会话时检查配置。
+只有需要指定特定专业软件或覆盖默认顺序时才加入 `open_rules`。规则保存于当前用户的 Agent 配置文件：
+Windows 为 `%AppData%\CloudFileAgent2\config.json`（更早的 Go 1.x 才是 `%AppData%\CloudFileLocal\config.json`），
+macOS/Linux 使用系统用户配置目录下的 `CloudFileAgent2/config.json`。先用安装脚本或 `--allow-origin`
+创建信任 origin，再按需要加入 `open_rules`；`--validate-config` 可在不启动会话时检查配置。
 
 ```json
 {
   "allowed_origins": ["https://cloudfile.example"],
-  "workspace_root": "D:\\CloudFileLocal\\sessions",
+  "workspace_root": "D:\\CloudFileAgent2\\workspace",
   "open_rules": [
     {
       "id": "cad-viewer",
@@ -68,49 +154,86 @@ CAD/三维格式。Windows 优先检查用户/机器注册的 `App Paths`，再�
 
 ### 下载目录（workspace_root）
 
-镜像按用途分成两个互不重叠的子树：
+镜像按用途分成两个互不重叠的子树，**库内目录结构一律拍平**（只取库内路径的最后一段做文件名）：
 
 ```
-{root}/view/{repo_id}/{库内路径}     本地查看：可随时重新下载的只读副本（下载后置只读）
-{root}/edit/{repo_id}/{库内路径}     本地编辑：用户的工作副本，只有显式选择才会被覆盖
-{root}/.cloudfile-meta/...           每个文件的下载指纹，供冲突判定使用
+{root}/view/{repo_id}/{文件名}     本地查看：可随时重新下载的只读副本（下载后置 0400）
+{root}/edit/{repo_id}/{文件名}     本地编辑：用户的工作副本，只有显式要求才覆盖
+{root}/.cloudfile-records/{用途}/{repo_id}/{hash}.json
+                                  每个文件的下载指纹：file_id、内容 SHA-256、大小、
+                                  实际落盘名、下载时间
+                                  （这里的 {用途} 是 local-view / local-edit，
+                                    {hash} = sha256(repo_id + 用途 + 库内路径)）
 ```
 
-查看与编辑刻意分开放，这样「本地查看」永远不会覆盖「本地编辑」正在改的那份文件；
-`repo_id` 仍固定在用途之下一层，所以改库名/移动库不会改变本地路径，每个子树也能整体
-清理或整体迁移。
+查看与编辑刻意分开放，这样「本地查看」永远不会覆盖「本地编辑」正在改的那份文件。
+`repo_id` 固定在用途之下一层，所以改库名/移动库不会改变本地路径，每个子树也能整体清理。
+同一目录里若另一个库内路径已占用同名文件，新文件按 Windows 习惯另取 `文件名 (1).ext`；
+**实际落盘名记在指纹文件里，识别始终靠库内路径**，磁盘上的名字只给人看。
 
-`root` 按以下顺序解析：
+`root` 按以下顺序解析（`config.Config.Root()`）：
 
-1. 配置里的 `workspace_root`（显式指定时始终优先，可用于逐机固定位置）；
-2. Windows：`D:\CloudFileLocal\sessions`；
-3. 回落：系统盘用户缓存目录，Windows 为 `%LocalAppData%\CloudFileLocal\sessions`。
+1. 配置里的 `workspace_root`（显式指定时始终优先，`filepath.Abs` 归一，可用于逐机固定位置）；
+2. Windows 默认：`D:\CloudFileAgent2\workspace`；
+3. 回落：`CloudFileAgent2/workspace`
+   - Windows：**`%LocalAppData%\CloudFileAgent2\workspace`**（`os.UserCacheDir`）；
+   - macOS/Linux：用户配置目录下（`~/Library/Application Support` / `$XDG_CONFIG_HOME`）。
 
-Windows 上第 2 步要求 `D:` 是**固定本地磁盘**（光驱、可移动盘、映射网络盘一律不算），
-且**实际可创建目录并写入文件**。任一条件不满足就静默回落到第 3 步，因此办公机上常见的
-「D: 是 DVD 光驱」「D: 只读或已写满」都会自动走系统盘，不会中途下载失败。判定每次调用
-都会重做，所以 D: 后来变得不可用时会降级到系统盘，而不是报错。
+回落位置刻意**不放在会被同步或清理的目录**：Windows 上不用 Roaming 的 `%AppData%`（域环境会同步到
+服务器，而镜像可能很大），macOS/Linux 上不用 `~/Library/Caches` / `$XDG_CACHE_HOME`（清理工具会删）；
+镜像里的编辑副本是用户本地改动的唯一副本。
 
-解析结果变化时，旧根上的整棵镜像（两个子树与指纹一起）会**整体移动**到新根，只在目标根
-尚无镜像内容时执行，且中途失败不删除源目录。若跑的是更早版本留下的「扁平」布局
-（`{root}/{repo_id}/{路径}`，无用途层），首次运行会按文件的只读位一次性分派：只读的归入
-`view/`，可写的归入 `edit/`，判不准的一律归入 `edit/`（少一次重新下载，好过丢掉本地改动）。
-显式配置了 `workspace_root` 时不搬迁，镜像就固定在那里。macOS/Linux 不做盘符偏好，始终
-使用用户缓存目录。
+Windows 上第 2 步的判定有**两个条件，都满足才采用**：
+
+- **卷类型必须是固定本地磁盘**（`GetDriveTypeW` 返回 `DRIVE_FIXED`）。光驱、U 盘、RAM 盘、
+  映射网络盘和 UNC 路径一律不算 —— 它们可能很慢、可能在下载中途消失，而策略每次调用都重判，
+  让镜像在两种根之间来回搬没有意义。探测查的是挂载表、不是网络往返（实测 < 1ms）。
+- **能建目录 + 能写进一个探测文件**，所以「D: 只读或已写满」也会自动走回落目录。
+
+判定**每次调用都重做**，所以 D: 后来变得不可用时会降级到回落目录，而不是报错。
+非 Windows 没有盘符偏好，直接用第 3 步。
+
+**换根时会把镜像搬过去**（`workspace.Adopt`）。解析结果和上一次用过的根不一致时，旧根上的
+`view/`、`edit/`、`.cloudfile-records/` 会被搬到新根 —— 重新下载对编辑副本没有意义，
+它是用户本地改动的唯一副本。规则：
+
+- **先复制、校验（逐文件比对大小）、再删源**；任何一步失败都保留源目录，宁可留两份。
+- **目标已有镜像内容就不合并**：目标优先，源原样留在原地。把两份都有内容的镜像合并等于猜
+  哪一份更新，那正是这条路径要避免的事。
+- 只碰那三个子树；源目录里别的东西不搬也不删；软链接一律跳过、不跟随。
+- 结果写到 `{root}/.cloudfile-records/mirror-adopt.json`（from/to、文件数、字节数、状态）。
+  标记文件 `%AppData%\CloudFileAgent2\mirror-root.txt`（放在 config.json 旁边，不随镜像移动）
+  记住当前根；**即使搬不动标记也会前移**，免得 D: 反复插拔时反复搬几个 GB。
+- 源按 `标记 → 当前默认根 → 被取代的默认根` 依次找，**取第一个真有文件的**。
+  「被取代的默认根」是为老装机准备的一次性兼容（Windows 以前回落到 `%AppData%`），
+  旧镜像因此会被自动搬过来，而不是被静默孤立。
+- 代价是换根后第一次解析会同步搬一次（原生消息没有超时限制），之后只剩一次小文件读取。
+
+两处与更早的 Go 1.x 文档不同、已按代码更正：
+
+- 目录名与结构：现在是 `CloudFileAgent2\workspace` 且库内路径拍平，不是
+  `CloudFileLocal\sessions` + `{repo_id}/{库内路径}`；指纹目录是 `.cloudfile-records/`，
+  不是 `.cloudfile-meta/`。
 
 ### 本地编辑的冲突判定
 
-「本地编辑」遇到本地已有副本时，Agent 会同时给出两个相互独立的事实：
+「本地编辑」遇到本地已有副本时，Agent 只判定两个**可验证**的事实，**不猜**哪个版本更好：
 
-- **网盘是否变过** —— 比对 `file_id`（Seafile obj_id，内容寻址，内容一变必变）；
-- **本地是否被改过** —— 现场重算内容 SHA-256，与下载时记下的 `baseline_digest` 比对。
+- **网盘是否变过** —— 指纹文件里记的 `file_id`（Seafile obj_id，内容寻址，内容一变必变）
+  与本次会话给出的 `file_id` 是否相等；
+- **本地是否被改过** —— 现场重算文件的 SHA-256，与下载时记下的 `digest` 是否相等。
 
-据此自动化解多数情况：网盘没变就直接复用本地；网盘变了但本地一字未动就直接换成网盘版本
-（没有本地改动可丢）。只有「网盘变了**且**本地改过」，或缺指纹、无法确认本地是否改过时，
-才询问用户「覆盖本地」还是「使用本地」。
+两个都相等才算「没变过」。据此（`internal/runner` 的 `materialize`）：
 
-指纹落在 `{root}/.cloudfile-meta/` 而不是浏览器存储里，所以清浏览器缓存、换浏览器、把镜像
-移到别的盘，都不会让判定失效。
+- **查看**：两个都相等就复用本地；否则**同名重下** —— 只读副本是可再生的，重下最省事。
+- **编辑**：**只有调用方显式要求覆盖（会话里的 `LocalAction=overwrite`）才会重下**；
+  其他任何情况（包括无法识别的 action）一律保留本地副本。宁可留下一个旧文件，
+  也不能把用户的改动当作副作用丢掉。
+- 指纹在、文件被移走或删掉：同名重下并把指纹补回去；从没下载过：另取 `文件名 (n)` 落盘。
+
+要不要覆盖由网页侧根据上面两个事实决定：Agent 会话里带的是**结论**，不是猜测依据。
+指纹落在 `{root}/.cloudfile-records/` 而不是浏览器存储里，所以清浏览器缓存、换浏览器、
+把镜像移到别的盘，都不会让判定失效。
 
 ## 安全模型
 
@@ -154,6 +277,12 @@ Chrome 扩展只把下载完成的 `.cloudfile` 文件路径转交给 Native Hos
 
 ## Agent2 2.0.1 双平台开发线与 Host 隔离（2026-10-11）
 
+> **后续变更（2026-10-14）**：Windows 已切换为**纯 Go 主控**，Host 与 macOS 同为
+> `com.cloudfile.agent2`、注册脚本为 `scripts/register-agent2-windows.ps1`；.NET 统一包
+> （Host `com.cloudfile.current_agent`）不再交付。本节以下直到「设备上传契约」之前的数节
+> 记录的是切换前的方案与当时的边界，只作历史参考；**当前** Windows 安装/注册/测试版流程
+> 见文首「Windows 测试版」一节。
+
 - **共用 `dev`**：Agent2 Go 2.0.1 同时构建 macOS arm64 与 Windows amd64；平台差异通过 Go build tags/平台适配处理，不再拆成 Windows/Mac 两条开发分支。
 - **macOS 主程序**：Go Agent2 2.0.1 Native Host `com.cloudfile.agent2`。使用 `scripts/register-agent2-macos.sh` 在当前用户 Chrome Profile 注册，Go 直接负责现有本地查看/编辑等可用能力。独占编辑还需设备写授权和用户操作入口，不能提前声明。
 - **Windows 过渡**：现有 .NET Agent1 1.x（Host `com.cloudfile.current_agent`）仍为主 UI/本地打开/用户密钥能力；Go Agent2 2.0.1 随 Windows 统一包安装，作为 **.NET Host 的内部子进程组件**逐步承载新增业务；不注册第二个 Host。唯一入口 `com.cloudfile.current_agent` 未来切换 Go 主控时不改名。当前只有 Go 内部提交执行器、暂存模块，浏览器**不发布未接线的独占能力**。日后 Go 主控、.NET 仅作薄原生能力适配，无需新开发分支。
@@ -181,7 +310,7 @@ Go 组件须显式配置 `allowed_origins` 才能处理服务器会话。Windows
 
 ### Windows 内部组件与 macOS 区别
 
-Windows 1.2.1 用 `eap-cloudfile/agent/scripts/register-native-host.ps1` 安装、回退及卸载完整包；dev 的旧 `register-windows.ps1` 与 `register-agent2-windows.ps1` 已停用，不再写注册表。Go `--component` 仅处理单个有预算的 JSON 请求，不允许组件自行升级/注册、任意会话文件或未经接线的提交操作。原 Go CLI、macOS `register-agent2-macos.sh` 与配置目录保持原行为。`--editing-capabilities` 仍可用于独立诊断，Windows GUI 已改为受限 JSON 协议。
+Windows 1.2.1 用 `eap-cloudfile/agent/scripts/register-native-host.ps1` 安装、回退及卸载完整包；dev 的旧 `register-windows.ps1` 与 `register-agent2-windows.ps1` 已停用，不再写注册表。**（2026-10-14 起反过来：`register-agent2-windows.ps1` 是 Windows 的正式注册脚本，.NET 统一包已停用。）**Go `--component` 仅处理单个有预算的 JSON 请求，不允许组件自行升级/注册、任意会话文件或未经接线的提交操作。原 Go CLI、macOS `register-agent2-macos.sh` 与配置目录保持原行为。`--editing-capabilities` 仍可用于独立诊断，Windows GUI 已改为受限 JSON 协议。
 
 内部 IPC 请求格式为 `{"ipc_version":1,"request":{"type":"capabilities"}}`，响应带同版本号、`ok` 与 `result` 或受限 `error_code`。GUI/Host 不再精确绑定 Go 补丁版本，兼容性由 Core 主版本及 IPC/Journal 版本决定；发布包另外锁定实际组件版本和哈希。
 

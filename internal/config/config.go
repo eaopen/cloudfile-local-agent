@@ -27,12 +27,23 @@ type OpenRule struct {
 	Command    []string `json:"command"`
 }
 
-func FilePath() (string, error) {
+// Dir is the per-user CloudFile directory (os.UserConfigDir()/CloudFileAgent2).
+// Windows keeps it under %AppData%, NOT %LocalAppData%.  Everything the agent
+// writes for the current user that is not the mirror itself lives here.
+func Dir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "CloudFileAgent2", "config.json"), nil
+	return filepath.Join(dir, "CloudFileAgent2"), nil
+}
+
+func FilePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.json"), nil
 }
 
 func Load() (Config, error) {
@@ -191,15 +202,23 @@ func (c Config) Allows(rawURL string) bool {
 }
 
 // Root returns the local mirror root. Sessions are downloaded into
-// {root}/{view|edit}/{repo_id}/{path}: view copies and editable working copies
-// live in separate subtrees.
+// {root}/{view|edit}/{repo_id}/{name}: view copies and editable working copies
+// live in separate subtrees, and the in-library path is flattened to its last
+// segment (a collision gets a " (n)" suffix and the real name is kept in
+// {root}/.cloudfile-records).
 //
 // An explicit workspace_root always wins, so operations can pin the location
 // per machine without touching the binaries.  Otherwise the platform default
-// applies: on Windows that prefers D: and only falls back to the system drive
-// (%LocalAppData%) when D: is missing or unusable.  The choice is re-checked on
-// every call, so a drive that becomes unusable degrades to the system drive
+// applies: on Windows that prefers D:\CloudFileAgent2\workspace and only falls
+// back when that drive is neither a fixed local disk nor writable.  The
+// fallback is os.UserCacheDir()/CloudFileAgent2/workspace -- %LocalAppData% on
+// Windows (never the roaming %AppData%), and the user config directory on
+// macOS/Linux (never the purgeable cache directory).  The choice is re-checked
+// on every call, so a drive that becomes unusable degrades to the fallback
 // instead of failing mid-download.
+//
+// Changing the resolved root never strands local work: workspace.Resolve
+// carries an existing mirror over (see workspace.Adopt).
 func (c Config) Root() (string, error) {
 	if c.WorkspaceRoot != "" {
 		return filepath.Abs(c.WorkspaceRoot)
@@ -212,11 +231,19 @@ func (c Config) Root() (string, error) {
 }
 
 // FallbackRoot is the location the mirror uses when no preferred drive is
-// usable.  It is exported because the mirror that a machine built before the
-// drive policy existed already lives there, and it has to be moved onto the
-// chosen root exactly once.
+// usable.  It is exported because the mirror a machine built before the drive
+// policy existed already lives there, and it has to be moved onto the chosen
+// root exactly once.
 func FallbackRoot() (string, error) {
 	return systemRoot()
+}
+
+// SupersededFallbackRoots lists default locations this agent used before the
+// drive policy settled.  Adopt consults them, once, so an existing mirror is
+// carried over instead of being silently stranded.  The list is expected to be
+// emptied as old installations age out.
+func SupersededFallbackRoots() []string {
+	return supersededRoots()
 }
 
 // selectRoot returns the first candidate that the probe accepts, otherwise

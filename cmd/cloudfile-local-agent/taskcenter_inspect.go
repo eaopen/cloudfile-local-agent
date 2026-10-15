@@ -10,6 +10,7 @@ import (
 
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
 type localTaskCommand struct {
@@ -40,7 +41,7 @@ func inspectLocalTask(input io.Reader) (localTaskInfo, error) {
 	if err != nil || len(cfg.AllowedOrigins) == 0 {
 		return localTaskInfo{}, errors.New("trusted user origin required")
 	}
-	root, err := cfg.Root()
+	root, err := workspace.Resolve(cfg)
 	if err != nil {
 		return localTaskInfo{}, err
 	}

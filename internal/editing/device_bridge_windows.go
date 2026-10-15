@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/eaopen/cloudfile-local-agent/internal/childproc"
 )
 
 // SignCommitWithWindowsBridge delegates *only* server-created commit device
@@ -57,6 +59,7 @@ func signWithWindowsBridge(ctx context.Context, exe string,
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, exe, "--sign-"+operation)
+	childproc.Hide(command)
 	command.Stdin = bytes.NewReader(body)
 	command.Stderr = io.Discard
 	var output bytes.Buffer

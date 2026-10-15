@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/eaopen/cloudfile-local-agent/internal/appfinder"
+	"github.com/eaopen/cloudfile-local-agent/internal/childproc"
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/session"
+	"github.com/eaopen/cloudfile-local-agent/internal/uinotify"
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
@@ -63,7 +65,18 @@ func RunDescriptor(descriptor session.Descriptor) error {
 	if err != nil {
 		return err
 	}
-	return openFile(cfg, claimed.Mode, localPath)
+	if err := openFile(cfg, claimed.Mode, localPath); err != nil {
+		return err
+	}
+	// 打开成功后再告诉托盘的 UI 一声：用户需要知道文件落在哪个本地目录、
+	// 以及 Agent 就守在右下角。提示发不出去不该影响这次会话。
+	_ = uinotify.Post(uinotify.Event{
+		Kind: uinotify.KindOpened,
+		Mode: claimed.Mode,
+		File: name,
+		Dir:  dir,
+	})
+	return nil
 }
 
 // RepoID is the library folder that keys the mirror subtree. The session
@@ -234,7 +247,11 @@ func launch(command []string, path string) error {
 	for index, argument := range command[1:] {
 		arguments[index] = strings.ReplaceAll(argument, "{file}", path)
 	}
-	return exec.Command(command[0], arguments...).Start()
+	started := exec.Command(command[0], arguments...)
+	// 配置的打开方式也可能是控制台程序（比如某些看图/编辑器带控制台入口）；
+	// 不加这个标记，宿主没控制台时就会闪一个黑框。
+	childproc.Hide(started)
+	return started.Start()
 }
 
 func openDefault(path string) error {
@@ -247,5 +264,6 @@ func openDefault(path string) error {
 	default:
 		command = exec.Command("xdg-open", path)
 	}
+	childproc.Hide(command)
 	return command.Start()
 }

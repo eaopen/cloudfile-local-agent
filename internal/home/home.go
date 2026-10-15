@@ -38,8 +38,10 @@ func Dir() string {
 			return dir
 		}
 	}
-	// Fallback for an unpacked/unregistered release. A normal user may use
-	// %APPDATA% on Windows and XDG_CONFIG_HOME on Unix without elevation.
+	// Fallback for an unpacked/unregistered release. A normal user may write
+	// here without elevation: os.UserCacheDir is %LocalAppData% on Windows and
+	// $XDG_CACHE_HOME (or ~/.cache) on Unix -- deliberately NOT the config
+	// directory, which is where config.json lives.
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), "CloudFileAgent2")

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 )
 
 const maxRenewalRecord = 1024
@@ -26,7 +28,7 @@ func RenewalGate(journal FileJournal, state State, instance, deviceID, sessionID
 	}
 	dir := filepath.Dir(journal.Path)
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !fsaccess.Private(info) {
 		return false, errors.New("private Checkout directory required")
 	}
 	// Cross-process OS lock. Existing editing lock implementation uses flock
@@ -54,7 +56,7 @@ func RenewalGate(journal FileJournal, state State, instance, deviceID, sessionID
 		At  int64  `json:"at"`
 	}
 	if fileInfo, statErr := os.Lstat(recordPath); statErr == nil {
-		if !fileInfo.Mode().IsRegular() || fileInfo.Mode().Perm()&0077 != 0 ||
+		if !fileInfo.Mode().IsRegular() || !fsaccess.Private(fileInfo) ||
 			fileInfo.Size() <= 0 || fileInfo.Size() > maxRenewalRecord {
 			return false, errors.New("renewal confirmation requires review")
 		}

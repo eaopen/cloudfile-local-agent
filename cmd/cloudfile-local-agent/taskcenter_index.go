@@ -8,6 +8,7 @@ import (
 
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
 // This command is local-only and callable by the installed paired .NET GUI
@@ -20,7 +21,7 @@ func indexLocalSession(input io.Reader, output io.Writer) error {
 	if err != nil {
 		return errors.New("local workspace configuration unavailable")
 	}
-	root, err := rootConfig.Root()
+	root, err := workspace.Resolve(rootConfig)
 	if err != nil {
 		return errors.New("local workspace unavailable")
 	}

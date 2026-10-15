@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -186,13 +187,22 @@ func ApplyExtension(source string, m *ExtensionManifest, dir string) (string, er
 	defer archive.Close()
 	var total int64
 	for _, item := range archive.File {
-		name := filepath.Clean(item.Name)
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) || strings.Contains(name, "\\") || item.Mode()&os.ModeSymlink != 0 {
+		// ZIP entry names are always '/'-separated. Reject a Windows separator
+		// outright (that is the zip-slip vector on Windows), then normalise with
+		// slash semantics so the confinement test behaves identically everywhere.
+		// filepath.Clean must NOT be used here: on Windows it rewrites every '/'
+		// into '\', which made the backslash guard below reject every entry that
+		// has a directory component and broke extension updates on Windows.
+		if strings.Contains(item.Name, `\`) {
 			return "", errors.New("invalid extension archive path")
 		}
-		path := filepath.Join(unpack, name)
+		name := path.Clean(item.Name)
+		if name == "." || name == ".." || path.IsAbs(name) || strings.HasPrefix(name, "../") || item.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("invalid extension archive path")
+		}
+		target := filepath.Join(unpack, filepath.FromSlash(name))
 		if item.FileInfo().IsDir() {
-			if err := os.MkdirAll(path, 0700); err != nil {
+			if err := os.MkdirAll(target, 0700); err != nil {
 				return "", err
 			}
 			continue
@@ -204,14 +214,14 @@ func ApplyExtension(source string, m *ExtensionManifest, dir string) (string, er
 		if total > 256<<20 {
 			return "", errors.New("extension archive exceeds limit")
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 			return "", err
 		}
 		source, err := item.Open()
 		if err != nil {
 			return "", err
 		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
 			source.Close()
 			return "", err

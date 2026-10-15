@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -175,10 +176,16 @@ func TestCorruptAndUnprivateStoreAreVisible(t *testing.T) {
 	if _, err := s.List(); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("List returned %v", err)
 	}
-	if err := os.Chmod(s.dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(filepath.Dir(s.dir)); err == nil {
-		t.Fatal("accepted world-readable task index")
+	// The privacy half of this test is POSIX-only. Windows has no permission
+	// bits, so os.Chmod cannot make the store "world-readable" and
+	// fsaccess.Private deliberately accepts every path there (access is
+	// governed by NTFS ACLs, which os.FileInfo does not expose).
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(s.dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(filepath.Dir(s.dir)); err == nil {
+			t.Fatal("accepted world-readable task index")
+		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
@@ -90,7 +91,7 @@ func New(workspaceRoot string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !fsaccess.Private(info) {
 		return nil, errors.New("private task directory required")
 	}
 	return &Store{dir: dir}, nil
@@ -208,7 +209,7 @@ func (s *Store) read(id string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 ||
+	if !info.Mode().IsRegular() || !fsaccess.Private(info) ||
 		info.Size() <= 0 || info.Size() > maxRecordSize {
 		return Task{}, ErrCorrupt
 	}

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/eaopen/cloudfile-local-agent/internal/fsaccess"
 )
 
 // Preferences are local GUI options, not authorizations. Neither changing the
@@ -46,7 +48,7 @@ func (s *Store) Preferences() (Preferences, error) {
 	if err != nil {
 		return p, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 4096 {
+	if !info.Mode().IsRegular() || !fsaccess.Private(info) || info.Size() > 4096 {
 		return p, ErrCorrupt
 	}
 	data, err := os.ReadFile(file)

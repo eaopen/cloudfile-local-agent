@@ -16,9 +16,7 @@ import (
 
 func leaseFixture(t *testing.T) (*renewal, taskcenter.VerifiedSession, string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	isolateUserConfig(t)
 	t.Setenv("CLOUDFILE_AGENT2_EXCLUSIVE_ENABLED", "1")
 	root := t.TempDir()
 	if err := config.Save(config.Config{AllowedOrigins: []string{"http://10.12.1.157:8092"}, WorkspaceRoot: root}); err != nil {

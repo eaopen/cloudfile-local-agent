@@ -16,6 +16,7 @@ import (
 
 	"github.com/eaopen/cloudfile-local-agent/internal/config"
 	"github.com/eaopen/cloudfile-local-agent/internal/taskcenter"
+	"github.com/eaopen/cloudfile-local-agent/internal/workspace"
 )
 
 type listResult struct {
@@ -68,7 +69,7 @@ func execute(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		root, err = cfg.Root()
+		root, err = workspace.Resolve(cfg)
 		if err != nil {
 			return err
 		}

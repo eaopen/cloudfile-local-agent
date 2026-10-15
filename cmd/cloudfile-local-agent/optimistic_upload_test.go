@@ -11,8 +11,7 @@ import (
 )
 
 func TestOptimisticLocalIntentCanBeInspectedWithoutReupload(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateUserConfig(t)
 	t.Setenv("CLOUDFILE_AGENT2_OPTIMISTIC_UPLOAD_ENABLED", "1")
 	session := "11111111-1111-4111-8111-111111111111"
 	device := "22222222-2222-4222-8222-222222222222"
