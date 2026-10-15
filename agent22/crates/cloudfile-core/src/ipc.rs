@@ -41,11 +41,9 @@ pub fn call(root: &Path, request: wire::Request) -> Result<Value> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    // 常驻桌面进程由这里拉起：它自己会建窗口，但**它自己不该带控制台**
+    // （否则登录启动时会先闪一个黑框）。
+    crate::childproc::hide(&mut command);
     match command.spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || {

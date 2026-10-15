@@ -76,7 +76,28 @@ pub fn plist_path(home: &Path) -> PathBuf {
 }
 
 /// `reg.exe` arguments for the current-user `Run` key. Pure for testing.
-pub fn run_key_arguments(value: &str, program: Option<&Path>) -> Result<Vec<String>> {
+///
+/// 只保留「值名 + 目标路径」这一份纯逻辑：校验在跨平台测试里被钉住，
+/// 真正写注册表由 `winreg`（Windows，进程内）完成，不再起 `reg.exe`。
+pub fn run_key_update(value: &str, program: Option<&Path>) -> Result<(String, Option<String>)> {
+    let key = run_key();
+    match program {
+        Some(path) => {
+            validate_value_name(value)?;
+            if !path.is_absolute() {
+                bail!("login item program must be an absolute path");
+            }
+            Ok((key, Some(path.to_string_lossy().into_owned())))
+        }
+        None => {
+            validate_value_name(value)?;
+            Ok((key, None))
+        }
+    }
+}
+
+/// 值名的合法性校验（注入护栏）：只允许短字母数字串，别让调用方把任意内容写进 Run 键。
+pub fn validate_value_name(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 64
         || !value
@@ -85,32 +106,12 @@ pub fn run_key_arguments(value: &str, program: Option<&Path>) -> Result<Vec<Stri
     {
         bail!("invalid login item value name");
     }
-    let key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run".to_string();
-    match program {
-        Some(path) => {
-            if !path.is_absolute() {
-                bail!("login item program must be an absolute path");
-            }
-            Ok(vec![
-                "add".into(),
-                key,
-                "/v".into(),
-                value.into(),
-                "/t".into(),
-                "REG_SZ".into(),
-                "/d".into(),
-                path.to_string_lossy().into_owned(),
-                "/f".into(),
-            ])
-        }
-        None => Ok(vec![
-            "delete".into(),
-            key,
-            "/v".into(),
-            value.into(),
-            "/f".into(),
-        ]),
-    }
+    Ok(())
+}
+
+/// 当前用户的 `Run` 键。
+pub fn run_key() -> String {
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run".to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -146,13 +147,12 @@ pub fn install(root: &Path, program: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let arguments = run_key_arguments(WINDOWS_VALUE, Some(program))?;
-        let output = std::process::Command::new("reg")
-            .args(&arguments)
-            .output()
-            .context("could not run reg.exe")?;
-        if !output.status.success() {
-            bail!("the login item was refused; start the agent manually");
+        // 进程内写 Run 键：以前是 `reg add`，父进程没有控制台时会闪一个黑窗口。
+        // 值名与目标路径的校验在 run_key_update 里（跨平台测试覆盖）。
+        let (key, value) = run_key_update(WINDOWS_VALUE, Some(program))?;
+        if let Some(path) = value {
+            crate::winreg::write_string(&key, WINDOWS_VALUE, &path)
+                .context("the login item was refused; start the agent manually")?;
         }
     }
     settings::update(root, |current| current.autostart = true)?;
@@ -172,8 +172,9 @@ pub fn remove(root: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let arguments = run_key_arguments(WINDOWS_VALUE, None)?;
-        let _ = std::process::Command::new("reg").args(&arguments).output();
+        // 只删自己写的那一个值，绝不动 Run 键里别人的条目；值本来就不在也算成功。
+        let (key, _) = run_key_update(WINDOWS_VALUE, None)?;
+        crate::winreg::delete_value(&key, WINDOWS_VALUE)?;
     }
     settings::update(root, |current| current.autostart = false)?;
     Ok(())
@@ -188,12 +189,7 @@ pub fn enabled() -> bool {
     }
     #[cfg(windows)]
     {
-        let key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-        std::process::Command::new("reg")
-            .args(["query", key, "/v", WINDOWS_VALUE])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        crate::winreg::read_string(&run_key(), WINDOWS_VALUE).is_some()
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -270,31 +266,26 @@ mod tests {
     }
 
     #[test]
-    fn run_key_arguments_are_exact_and_reversible() {
-        let add = run_key_arguments(WINDOWS_VALUE, Some(Path::new(EXE))).unwrap();
-        assert_eq!(add[0], "add");
+    fn run_key_update_is_exact_and_reversible() {
+        // 写：键 + 目标程序路径。
+        let (key, value) = run_key_update(WINDOWS_VALUE, Some(Path::new(EXE))).unwrap();
         assert_eq!(
-            add[1],
+            key,
             "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
         );
-        assert_eq!(add[3], "CloudFileAgent22");
-        assert_eq!(add[7], EXE);
-        assert_eq!(add.len(), 9);
-        let remove = run_key_arguments(WINDOWS_VALUE, None).unwrap();
+        assert_eq!(value.as_deref(), Some(EXE));
+        // 删：同一个键，值为 None —— 只删自己那个值，不删键。
+        let (key, value) = run_key_update(WINDOWS_VALUE, None).unwrap();
         assert_eq!(
-            remove,
-            vec![
-                "delete",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "/v",
-                "CloudFileAgent22",
-                "/f"
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            key,
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
         );
-        assert!(run_key_arguments("bad name", None).is_err());
-        assert!(run_key_arguments(WINDOWS_VALUE, Some(Path::new("relative.exe"))).is_err());
+        assert_eq!(value, None);
+        // 注入护栏与路径校验。
+        assert!(run_key_update("bad name", None).is_err());
+        assert!(run_key_update(WINDOWS_VALUE, Some(Path::new("relative.exe"))).is_err());
+        assert!(validate_value_name("CloudFileAgent22").is_ok());
+        assert!(validate_value_name("").is_err());
+        assert!(validate_value_name(&"x".repeat(65)).is_err());
     }
 }

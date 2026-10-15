@@ -376,6 +376,7 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+ "winreg",
  "zeroize",
 ]
 

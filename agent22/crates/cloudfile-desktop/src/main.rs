@@ -454,6 +454,8 @@ fn run_update(state: tauri::State<'_, State>, force: bool) -> Result<Value, Stri
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // 同 native-host：DETACHED_PROCESS 让升级进程脱离本窗口活下来，并且没有控制台
+        // （所以这里不需要 `childproc::hide`）。
         command.creation_flags(0x0000_0008);
     }
     command

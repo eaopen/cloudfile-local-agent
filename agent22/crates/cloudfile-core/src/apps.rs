@@ -228,49 +228,6 @@ pub fn open_directory(path: &Path) -> Result<()> {
     spawn(program, &[path.to_string_lossy().into_owned()])
 }
 
-/// Parses `reg query <key> /ve` output into the default value.
-/// Kept platform independent so it is covered by the normal test run.
-pub fn parse_reg_default_value(stdout: &str) -> Option<String> {
-    for line in stdout.lines() {
-        for (marker, expand) in [("REG_EXPAND_SZ", true), ("REG_SZ", false)] {
-            let Some((_, value)) = line.split_once(marker) else {
-                continue;
-            };
-            let value = value.trim();
-            if value.is_empty() {
-                break;
-            }
-            if expand {
-                // Only an expandable value is a template; a plain path is literal.
-                if let Some(expanded) = std::env::var_os(value) {
-                    return Some(expanded.to_string_lossy().into_owned());
-                }
-            }
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-/// Parses `reg query <key> /v <name>` output into that named value. The value
-/// is a version string here, so it is returned verbatim rather than expanded.
-/// Kept platform independent so it is covered by the normal test run.
-pub fn parse_named_reg_value(stdout: &str, name: &str) -> Option<String> {
-    for line in stdout.lines() {
-        // Each match reads `    pv    REG_SZ    120.0.2210.91`.
-        let trimmed = line.trim_start();
-        let Some((candidate, rest)) = trimmed.split_once(char::is_whitespace) else {
-            continue;
-        };
-        if candidate != name {
-            continue;
-        }
-        let (_, value) = rest.split_once("REG_SZ")?;
-        return Some(value.trim().to_string());
-    }
-    None
-}
-
 /// Version of the WebView2 runtime the Windows desktop shell needs, if present.
 ///
 /// Tauri on Windows renders through WebView2. It ships with current Windows and
@@ -283,23 +240,14 @@ pub fn webview2_version() -> Option<String> {
     {
         // Edge registers the runtime per machine and per user; either satisfies
         // the shell, so the machine-wide key is only preferred, not required.
+        // 进程内读注册表：以前起 `reg.exe query`，父进程没有控制台时会闪黑窗口。
         const CLIENT: &str = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
         let keys = [
             format!("HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{CLIENT}"),
             format!("HKCU\\Software\\Microsoft\\EdgeUpdate\\Clients\\{CLIENT}"),
         ];
         for key in keys {
-            let Ok(output) = std::process::Command::new("reg")
-                .args(["query", &key, "/v", "pv"])
-                .output()
-            else {
-                continue;
-            };
-            if !output.status.success() {
-                continue;
-            }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(version) = parse_named_reg_value(&stdout, "pv") {
+            if let Some(version) = crate::winreg::read_string(&key, "pv") {
                 if !version.is_empty() {
                     return Some(version);
                 }
@@ -431,7 +379,6 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use std::process::Command;
 
     pub struct Spec {
         pub id: &'static str,
@@ -563,28 +510,21 @@ mod platform {
     }
 
     fn registry(exe: &str) -> Option<PathBuf> {
-        let candidate = format!("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}");
-        for (hive, force) in [("HKCU", false), ("HKLM", false), ("HKLM", true)] {
-            let key = if force {
-                format!(
-                    "Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}"
-                )
-            } else {
-                candidate.clone()
-            };
-            let output = Command::new("reg")
-                .args(["query", &format!("{hive}\\{key}"), "/ve"])
-                .output();
-            if let Ok(output) = output {
-                if output.status.success() {
-                    if let Some(value) =
-                        super::parse_reg_default_value(&String::from_utf8_lossy(&output.stdout))
-                    {
-                        let path = PathBuf::from(value);
-                        if path.is_file() {
-                            return Some(path);
-                        }
-                    }
+        // App Paths 的默认值就是这个可执行文件的完整路径。
+        // 进程内读：以前每个候选应用都要起一次 `reg.exe query`，一轮检测下来就是
+        // 一串黑窗口（Go 侧同样的调用点每消息 48 次，是黑窗口的根因）。
+        let candidates = [
+            format!("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}"),
+            format!("HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}"),
+            format!(
+                "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}"
+            ),
+        ];
+        for key in candidates {
+            if let Some(value) = crate::winreg::read_string(&key, "") {
+                let path = PathBuf::from(value);
+                if path.is_file() {
+                    return Some(path);
                 }
             }
         }
@@ -734,29 +674,6 @@ mod tests {
     }
 
     #[test]
-    fn named_registry_values_are_read_by_name_not_by_position() {
-        // The real layout of `reg query <key> /v pv`.
-        let stdout = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}\r\n    pv    REG_SZ    120.0.2210.91\r\n\r\n";
-        assert_eq!(
-            parse_named_reg_value(stdout, "pv").as_deref(),
-            Some("120.0.2210.91")
-        );
-        // A different value name next to it must not be mistaken for the target.
-        let other = "HKEY_CURRENT_USER\\Software\\Vendor\r\n    Name    REG_SZ    CloudFile\r\n    pv    REG_SZ    1.2.3\r\n";
-        assert_eq!(parse_named_reg_value(other, "pv").as_deref(), Some("1.2.3"));
-        assert_eq!(parse_named_reg_value(other, "name"), None);
-        assert_eq!(parse_named_reg_value(other, "missing"), None);
-        // A missing key produces an error message, not a value.
-        assert_eq!(
-            parse_named_reg_value(
-                "ERROR: The system was unable to find the specified registry key or value.\r\n",
-                "pv"
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn runtime_probe_only_answers_where_it_applies() {
         // macOS renders through the system WebKit, so there is nothing to report
         // and the caller must be able to tell that apart from "missing".
@@ -871,19 +788,6 @@ mod tests {
         if let Some(app) = for_file(&apps, "MODEL.STEP") {
             assert!(app.extensions.contains(&"step".to_string()));
         }
-    }
-
-    #[test]
-    fn registry_output_parsing_handles_expandable_values() {
-        let sample = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WINWORD.EXE\r\n    (Default)    REG_SZ    C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE\r\n\r\n";
-        assert_eq!(
-            parse_reg_default_value(sample).unwrap(),
-            "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
-        );
-        assert!(parse_reg_default_value(
-            "ERROR: The system was unable to find the specified registry key or value."
-        )
-        .is_none());
     }
 
     #[test]

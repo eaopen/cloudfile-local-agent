@@ -122,6 +122,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 ## 代码边界
 
 - `cloudfile-core`：会话、用户配置、任务记录、设备签名、提交快照与全量上传；`exclusive` 模块负责独占 Checkout 租约与 Commit/Checkin，`cdc` 模块负责大文件分块切分与计划/暂存/发布链路，`guard` 模块是“能否安全退出 / 升级”的唯一判定来源，`settings` 负责本机偏好与悬浮位置，`apps` 负责应用检测与自定义打开规则，`hostreg` / `update` / `autostart` 负责注册、版本目录与登录项。
+- `cloudfile-core` 的两个 Windows 底层保障模块：`winreg`（进程内读写注册表）与 `childproc`（子进程不弹控制台窗口）。注册、登录项、WebView2 探测、应用探测**一律走它们**，不再 spawn `reg.exe`——否则父进程是 GUI（Tauri 桌面）时每次调用都会闪一个黑窗口，而且在禁用 `reg.exe` 的机器上会直接失败而不是降级。只有「打开文档的应用」与「必须脱离宿主存活的升级进程」例外，前者需要窗口、后者用 `DETACHED_PROCESS` 自带无控制台。
 - `cloudfile-native-host`：有界 stdio 消息、本机请求转交，以及安装/升级/回退用的命令行。
 - `cloudfile-desktop`：唯一任务执行进程与轻量静态界面（`ui/` 下四组静态资源：任务中心、悬浮入口、轻提示、样式），无 Node 运行时。
 
@@ -134,7 +135,8 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（91 项，含 1 项需要外部条件的 `#[ignore]`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（92 项，含 1 项需要外部条件的 `#[ignore]`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` 的注册表步骤、`cli_contract` 的注册与接管）**不再依赖 `reg.exe`**：注册表是进程内读写的，所以这些用例在禁用 `reg.exe` 的环境里也能跑、也会绿。
 其中 `cloudfile-native-host/tests/cli_contract.rs` 与 `cloudfile-desktop/tests/cli_contract.rs` 直接运行真实二进制，并把 `HOME`（Windows 另加 `LOCALAPPDATA`）重定向到临时目录，因此注册、接管、回退、卸载、健康检查与协议自检都不触碰开发机上的真实 Chrome 注册。
 
 尚未验收：

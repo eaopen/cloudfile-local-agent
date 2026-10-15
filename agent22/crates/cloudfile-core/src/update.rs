@@ -479,8 +479,11 @@ pub fn prune(root: &Path, host: &str, dir: &Path, keep: usize) -> Result<Vec<Str
 /// Reads the version a candidate binary reports. Kept separate from the
 /// verification path so a probe failure can never be mistaken for a good build.
 pub fn probe(binary: &Path) -> Result<String> {
-    let output = std::process::Command::new(binary)
-        .arg("--version")
+    let mut command = std::process::Command::new(binary);
+    command.arg("--version");
+    // 被探测的是控制台程序：不隐藏的话，在 GUI 父进程（Tauri 桌面）下会闪一个黑窗口。
+    crate::childproc::hide(&mut command);
+    let output = command
         .output()
         .context("staged binary could not be started")?;
     if !output.status.success() {
@@ -496,8 +499,10 @@ pub fn probe(binary: &Path) -> Result<String> {
 /// Health check a staged build must pass before it is allowed to replace the
 /// running one: it must start, answer, and speak the same local protocol.
 pub fn probe_component(binary: &Path) -> Result<(String, u32, u32)> {
-    let output = std::process::Command::new(binary)
-        .arg("--component")
+    let mut command = std::process::Command::new(binary);
+    command.arg("--component");
+    crate::childproc::hide(&mut command);
+    let output = command
         .output()
         .context("staged binary could not be started")?;
     if !output.status.success() {

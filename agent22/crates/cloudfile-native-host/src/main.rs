@@ -398,6 +398,8 @@ fn start_detached(argument: &str, root: &Path) -> Value {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS：这个子进程必须活过宿主进程（Chrome 写完应答就把宿主干掉），
+        // 顺带也让它没有控制台，所以不需要 `childproc::hide`。
         command.creation_flags(0x0000_0008);
     }
     match command.spawn() {

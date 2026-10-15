@@ -105,15 +105,16 @@ pub fn previous_manifest_path(dir: &Path, host: &str) -> PathBuf {
     dir.join(format!("{host}.previous.json"))
 }
 
-/// `reg.exe` arguments for the current-user Chrome NativeMessagingHosts key.
-/// Pure so the exact command line is covered by the cross-platform test run.
-/// The per-user Chrome native messaging key. Pure, so the existence probe and
-/// the arguments handed to `reg.exe` cannot drift apart.
+/// 当前用户的 Chrome NativeMessagingHosts 键（带 hive 前缀的完整路径）。
+/// 纯函数，所以「查存在」和「写/删」用的一定是同一个键，不会漂移。
 pub fn registry_key(host: &str) -> String {
     format!("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\{host}")
 }
 
-pub fn registry_arguments(host: &str, manifest: Option<&Path>) -> Result<Vec<String>> {
+/// 这次注册要在注册表里落下的终态：`Some(path)` = 默认值写成 manifest 路径，
+/// `None` = 整个键删掉。拆成纯函数是为了让「写什么」在跨平台测试里被钉住，
+/// 真正的落盘由 [`winreg`]（Windows，进程内）完成。
+pub fn registry_update(host: &str, manifest: Option<&Path>) -> Result<(String, Option<String>)> {
     validate_host(host)?;
     let key = registry_key(host);
     match manifest {
@@ -121,54 +122,29 @@ pub fn registry_arguments(host: &str, manifest: Option<&Path>) -> Result<Vec<Str
             if !path.is_absolute() {
                 bail!("native host manifest path must be absolute");
             }
-            Ok(vec![
-                "add".into(),
-                key,
-                "/ve".into(),
-                "/t".into(),
-                "REG_SZ".into(),
-                "/d".into(),
-                path.to_string_lossy().into_owned(),
-                "/f".into(),
-            ])
+            Ok((key, Some(path.to_string_lossy().into_owned())))
         }
-        None => Ok(vec!["delete".into(), key, "/f".into()]),
+        None => Ok((key, None)),
     }
-}
-
-#[cfg(windows)]
-fn registry_key_exists(host: &str) -> Result<bool> {
-    let output = std::process::Command::new("reg")
-        .args(["query", &registry_key(host)])
-        .output()
-        .context("could not run reg.exe")?;
-    Ok(output.status.success())
 }
 
 #[cfg(windows)]
 fn apply_registry(host: &str, manifest: Option<&Path>) -> Result<()> {
-    // `reg delete` fails on a key that is not there, and its message is
-    // localised, so its exit code cannot be interpreted. Removing an absent key
-    // is the intended end state, so the delete is skipped instead of reported
-    // as a failure: unregistering a host that was never registered succeeds.
-    if manifest.is_none() && !registry_key_exists(host)? {
-        return Ok(());
+    // 进程内读写：以前每注册一次要起两个 `reg.exe`（先 query 探存在、再 add/delete），
+    // 在 GUI 父进程下就是两次黑窗口，且机器禁用 reg.exe 时直接失败。
+    let (key, value) = registry_update(host, manifest)?;
+    match value {
+        Some(path) => crate::winreg::write_string(&key, "", &path),
+        // 删掉整个键（含子键）。键本来就不在也算成功：「删完不存在」是调用方要的终态。
+        None => crate::winreg::delete_key(&key),
     }
-    let arguments = registry_arguments(host, manifest)?;
-    let output = std::process::Command::new("reg")
-        .args(&arguments)
-        .output()
-        .context("could not run reg.exe")?;
-    if !output.status.success() {
-        bail!("native host registry update failed");
-    }
-    Ok(())
 }
 
 #[cfg(not(windows))]
 fn apply_registry(host: &str, manifest: Option<&Path>) -> Result<()> {
-    // Registration on Unix is a plain file in a fixed directory.
-    registry_arguments(host, manifest).map(|_| ())
+    // Unix 侧注册就是固定目录里的一个文件，没有注册表可写；
+    // 这里只保留 host/manifest 的校验（与 Windows 口径一致），然后什么都不做。
+    registry_update(host, manifest).map(|_| ())
 }
 
 pub fn state(dir: &Path, host: &str, expected_binary: Option<&Path>) -> Result<Registration> {
@@ -322,7 +298,7 @@ mod tests {
     const ID: &str = "abcdefghijklmnopabcdefghijklmnop";
 
     /// An absolute directory for the host OS. `Path::is_absolute` is false for
-    /// `/cloudfile` on Windows, and `registry_arguments` refuses a manifest
+    /// `/cloudfile` on Windows, and `registry_update` refuses a manifest
     /// path that is not absolute, so a Unix literal would fail there.
     #[cfg(windows)]
     const BASE: &str = "C:/cloudfile";
@@ -386,38 +362,23 @@ mod tests {
     }
 
     #[test]
-    fn registry_arguments_are_exact_and_reversible() {
+    fn registry_update_is_exact_and_reversible() {
         let manifest = Path::new(BASE).join("native-host/com.cloudfile.agent22.dev.json");
-        let add = registry_arguments(DEV_HOST, Some(&manifest)).unwrap();
+        // 写：键 + 要落到默认值里的 manifest 绝对路径。
+        let (key, value) = registry_update(DEV_HOST, Some(&manifest)).unwrap();
         assert_eq!(
-            add,
-            vec![
-                "add",
-                "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent22.dev",
-                "/ve",
-                "/t",
-                "REG_SZ",
-                "/d",
-                manifest.to_string_lossy().as_ref(),
-                "/f"
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            key,
+            "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent22.dev"
         );
-        let remove = registry_arguments(DEV_HOST, None).unwrap();
+        assert_eq!(value.as_deref(), Some(manifest.to_string_lossy().as_ref()));
+        // 删：同一个键，值为 None —— 整个键摘掉，Chrome 就再也找不到这个 Host。
+        let (key, value) = registry_update(DEV_HOST, None).unwrap();
         assert_eq!(
-            remove,
-            vec![
-                "delete",
-                "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent22.dev",
-                "/f"
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            key,
+            "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent22.dev"
         );
-        assert!(registry_arguments(DEV_HOST, Some(Path::new("relative.json"))).is_err());
+        assert_eq!(value, None);
+        assert!(registry_update(DEV_HOST, Some(Path::new("relative.json"))).is_err());
     }
 
     #[test]
