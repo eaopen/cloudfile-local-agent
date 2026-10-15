@@ -5,24 +5,30 @@ package launch
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 )
 
+// startDetached is provided by the platform files. It starts executable
+// detached from the caller and returns the running command, so the caller can
+// release the process.
+//
+// It is per-platform because detaching is: Windows needs creation flags (and a
+// retry, because some job objects forbid breakaway), Unix needs a new session.
+// stdin becomes the child's standard input; nil discards it.
+// See launch_windows.go and launch_other.go.
+
+// Detached starts executable with args and returns immediately, leaving the
+// child running after the caller exits.
 func Detached(executable string, args ...string) error {
 	if executable == "" || !filepath.IsAbs(executable) {
 		return errors.New("absolute local executable required")
 	}
-	command := exec.Command(executable, args...)
-	configureDetached(command)
-	command.Stdin = nil
-	command.Stdout = nil
-	command.Stderr = nil
-	// Chrome native messaging must not wait for its own updater subprocess.
-	if err := command.Start(); err != nil {
+	command, err := startDetached(executable, args, nil)
+	if err != nil {
 		return err
 	}
+	// Chrome native messaging must not wait for its own updater subprocess.
 	return command.Process.Release()
 }
 
@@ -38,10 +44,8 @@ func WithInput(executable string, data []byte, args ...string) error {
 	}
 	defer reader.Close()
 	defer writer.Close()
-	command := exec.Command(executable, args...)
-	configureDetached(command)
-	command.Stdin = reader
-	if err := command.Start(); err != nil {
+	command, err := startDetached(executable, args, reader)
+	if err != nil {
 		return err
 	}
 	reader.Close()
