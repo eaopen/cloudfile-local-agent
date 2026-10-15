@@ -163,6 +163,14 @@ pub fn workspace_root(root: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// An absolute workspace path for the host OS. `Path::is_absolute` is false
+    /// for `/tmp/x` on Windows, so a Unix literal here would be rejected by
+    /// validation there while passing on macOS.
+    #[cfg(windows)]
+    const WORKSPACE: &str = "C:/cloudfile/workspace";
+    #[cfg(not(windows))]
+    const WORKSPACE: &str = "/tmp/cloudfile-workspace";
+
     fn tmp() -> (tempfile::TempDir, PathBuf) {
         crate::storage::test_root()
     }
@@ -206,7 +214,7 @@ mod tests {
             ..Default::default()
         };
         assert!(settings.validate().is_err());
-        settings.workspace_root = Some("/tmp/ok".into());
+        settings.workspace_root = Some(WORKSPACE.into());
         assert!(settings.validate().is_ok());
         settings.schema = 99;
         assert!(settings.validate().is_err());
@@ -228,15 +236,12 @@ mod tests {
         let root = root.as_path();
         let settings = update(root, |s| {
             s.notify_on_saved = false;
-            s.workspace_root = Some("/tmp/cloudfile-workspace".into());
+            s.workspace_root = Some(WORKSPACE.into());
         })
         .unwrap();
         assert!(!settings.notify_on_saved);
         assert_eq!(load(root).unwrap(), settings);
-        assert_eq!(
-            workspace_root(root),
-            PathBuf::from("/tmp/cloudfile-workspace")
-        );
+        assert_eq!(workspace_root(root), PathBuf::from(WORKSPACE));
         std::fs::write(path(root), br#"{"schema":1,"upload":true}"#).unwrap();
         assert!(load(root).is_err());
     }

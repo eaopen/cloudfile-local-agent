@@ -716,6 +716,14 @@ pub fn names() -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A program path that is absolute on the host OS. Rules must not hard-code
+    /// a Unix path: `Path::is_absolute` is false for `/usr/bin/tool` on Windows,
+    /// so such a test passes locally and fails the Windows runner.
+    #[cfg(windows)]
+    const TOOL: &str = "C:/tools/tool.exe";
+    #[cfg(not(windows))]
+    const TOOL: &str = "/usr/bin/tool";
+
     fn rule(id: &str, modes: &[&str], extensions: &[&str], command: &[&str]) -> OpenRule {
         OpenRule {
             id: id.into(),
@@ -767,45 +775,25 @@ mod tests {
     fn rule_validation_rejects_unsafe_commands() {
         for bad in [
             rule("a", &["local-edit"], &["dwg"], &["relative/tool"]),
-            rule("a", &["local-edit"], &["dwg"], &["/usr/bin/tool"]),
-            rule(
-                "a",
-                &["local-edit"],
-                &["dwg"],
-                &["/usr/bin/tool", "{file}", "{file}"],
-            ),
-            rule("a", &["prompt"], &["dwg"], &["/usr/bin/tool", "{file}"]),
-            rule("", &["local-edit"], &["dwg"], &["/usr/bin/tool", "{file}"]),
-            rule("a", &["local-edit"], &[], &["/usr/bin/tool", "{file}"]),
-            rule("a", &["local-edit"], &["DWG"], &["/usr/bin/tool", "{file}"]),
+            rule("a", &["local-edit"], &["dwg"], &[TOOL]),
+            rule("a", &["local-edit"], &["dwg"], &[TOOL, "{file}", "{file}"]),
+            rule("a", &["prompt"], &["dwg"], &[TOOL, "{file}"]),
+            rule("", &["local-edit"], &["dwg"], &[TOOL, "{file}"]),
+            rule("a", &["local-edit"], &[], &[TOOL, "{file}"]),
+            rule("a", &["local-edit"], &["DWG"], &[TOOL, "{file}"]),
         ] {
             assert!(bad.validate().is_err(), "{bad:?} must be rejected");
         }
-        rule(
-            "ok",
-            &["local-edit"],
-            &["dwg"],
-            &["/usr/bin/tool", "{file}"],
-        )
-        .validate()
-        .unwrap();
+        rule("ok", &["local-edit"], &["dwg"], &[TOOL, "{file}"])
+            .validate()
+            .unwrap();
     }
 
     #[test]
     fn specific_extension_outranks_a_wildcard() {
         let rules = vec![
-            rule(
-                "catch",
-                &["local-edit"],
-                &["*"],
-                &["/usr/bin/open", "{file}"],
-            ),
-            rule(
-                "cad",
-                &["local-edit"],
-                &["dwg"],
-                &["/usr/bin/cad", "{file}"],
-            ),
+            rule("catch", &["local-edit"], &["*"], &[TOOL, "{file}"]),
+            rule("cad", &["local-edit"], &["dwg"], &[TOOL, "{file}"]),
         ];
         assert_eq!(
             resolve_open_rule(&rules, "optimistic-edit", "a.dwg")
@@ -819,18 +807,8 @@ mod tests {
             "catch"
         );
         let ordered = vec![
-            rule(
-                "cad",
-                &["local-edit"],
-                &["dwg"],
-                &["/usr/bin/cad", "{file}"],
-            ),
-            rule(
-                "catch",
-                &["local-edit"],
-                &["*"],
-                &["/usr/bin/open", "{file}"],
-            ),
+            rule("cad", &["local-edit"], &["dwg"], &[TOOL, "{file}"]),
+            rule("catch", &["local-edit"], &["*"], &[TOOL, "{file}"]),
         ];
         assert_eq!(
             resolve_open_rule(&ordered, "local-edit", "a.dwg")
@@ -846,14 +824,14 @@ mod tests {
             "view",
             &["local-view"],
             &["dwg"],
-            &["/usr/bin/cad", "--readonly", "{file}"],
+            &[TOOL, "--readonly", "{file}"],
         )];
         assert!(resolve_open_rule(&rules, "local-edit", "a.dwg").is_none());
         assert!(resolve_open_rule(&rules, "local-view", "a.dwg").is_some());
         let rendered = rules[0].render(Path::new("/tmp/a b.dwg"));
         assert_eq!(
             rendered,
-            vec!["/usr/bin/cad", "--readonly", "/tmp/a b.dwg"]
+            vec![TOOL, "--readonly", "/tmp/a b.dwg"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()
@@ -863,8 +841,8 @@ mod tests {
     #[test]
     fn duplicate_rule_ids_are_rejected() {
         let rules = vec![
-            rule("same", &["local-edit"], &["dwg"], &["/usr/bin/a", "{file}"]),
-            rule("same", &["local-edit"], &["dxf"], &["/usr/bin/b", "{file}"]),
+            rule("same", &["local-edit"], &["dwg"], &[TOOL, "{file}"]),
+            rule("same", &["local-edit"], &["dxf"], &[TOOL, "{file}"]),
         ];
         assert!(validate_rules(&rules).is_err());
     }

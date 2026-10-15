@@ -565,7 +565,15 @@ mod tests {
     #[test]
     fn handoff_files_must_be_absolute_cloudfile_paths() {
         assert_eq!(open_session_file("relative.cloudfile")["ok"], false);
-        assert_eq!(open_session_file("/tmp/missing.cloudfile")["ok"], false);
+        // An absolute path that simply does not exist. Built from the host's
+        // temporary directory so the case is genuinely exercised on Windows
+        // too, where a Unix literal like `/tmp/x` is not absolute.
+        let missing = std::env::temp_dir().join("cloudfile-missing-handoff.cloudfile");
+        assert_eq!(
+            open_session_file(&missing.to_string_lossy())["ok"],
+            false,
+            "{missing:?}"
+        );
     }
 
     #[test]

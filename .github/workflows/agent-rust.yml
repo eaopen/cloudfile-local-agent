@@ -28,7 +28,9 @@ jobs:
         with:
           node-version: '22'
       - name: Test locked Rust workspace
-        run: cargo test --workspace --locked
+        # Keep going after a failing crate: without this, one Windows failure
+        # hides every other target and the platform gaps need repeated pushes.
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Test Chrome pairing adapter
         run: node --test scripts/dev-pairing.test.cjs
       - name: Package development build

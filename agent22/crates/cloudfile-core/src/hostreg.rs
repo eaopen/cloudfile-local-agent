@@ -107,9 +107,15 @@ pub fn previous_manifest_path(dir: &Path, host: &str) -> PathBuf {
 
 /// `reg.exe` arguments for the current-user Chrome NativeMessagingHosts key.
 /// Pure so the exact command line is covered by the cross-platform test run.
+/// The per-user Chrome native messaging key. Pure, so the existence probe and
+/// the arguments handed to `reg.exe` cannot drift apart.
+pub fn registry_key(host: &str) -> String {
+    format!("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\{host}")
+}
+
 pub fn registry_arguments(host: &str, manifest: Option<&Path>) -> Result<Vec<String>> {
     validate_host(host)?;
-    let key = format!("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\{host}");
+    let key = registry_key(host);
     match manifest {
         Some(path) => {
             if !path.is_absolute() {
@@ -131,7 +137,23 @@ pub fn registry_arguments(host: &str, manifest: Option<&Path>) -> Result<Vec<Str
 }
 
 #[cfg(windows)]
+fn registry_key_exists(host: &str) -> Result<bool> {
+    let output = std::process::Command::new("reg")
+        .args(["query", &registry_key(host)])
+        .output()
+        .context("could not run reg.exe")?;
+    Ok(output.status.success())
+}
+
+#[cfg(windows)]
 fn apply_registry(host: &str, manifest: Option<&Path>) -> Result<()> {
+    // `reg delete` fails on a key that is not there, and its message is
+    // localised, so its exit code cannot be interpreted. Removing an absent key
+    // is the intended end state, so the delete is skipped instead of reported
+    // as a failure: unregistering a host that was never registered succeeds.
+    if manifest.is_none() && !registry_key_exists(host)? {
+        return Ok(());
+    }
     let arguments = registry_arguments(host, manifest)?;
     let output = std::process::Command::new("reg")
         .args(&arguments)
@@ -299,6 +321,14 @@ mod tests {
 
     const ID: &str = "abcdefghijklmnopabcdefghijklmnop";
 
+    /// An absolute directory for the host OS. `Path::is_absolute` is false for
+    /// `/cloudfile` on Windows, and `registry_arguments` refuses a manifest
+    /// path that is not absolute, so a Unix literal would fail there.
+    #[cfg(windows)]
+    const BASE: &str = "C:/cloudfile";
+    #[cfg(not(windows))]
+    const BASE: &str = "/cloudfile";
+
     fn binary(dir: &Path) -> PathBuf {
         let name = if cfg!(windows) {
             "cloudfile-native-host.exe"
@@ -344,9 +374,21 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_key_is_fixed_for_the_current_user() {
+        assert_eq!(
+            registry_key(DEV_HOST),
+            "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent22.dev"
+        );
+        assert_eq!(
+            registry_key(LEGACY_HOSTS[0]),
+            "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.cloudfile.agent2"
+        );
+    }
+
+    #[test]
     fn registry_arguments_are_exact_and_reversible() {
-        let manifest = Path::new("/cloudfile/native-host/com.cloudfile.agent22.dev.json");
-        let add = registry_arguments(DEV_HOST, Some(manifest)).unwrap();
+        let manifest = Path::new(BASE).join("native-host/com.cloudfile.agent22.dev.json");
+        let add = registry_arguments(DEV_HOST, Some(&manifest)).unwrap();
         assert_eq!(
             add,
             vec![

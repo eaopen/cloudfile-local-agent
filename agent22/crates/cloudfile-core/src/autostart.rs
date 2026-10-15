@@ -212,17 +212,37 @@ fn uid() -> Result<u32> {
 mod tests {
     use super::*;
 
+    /// Absolute paths for the host OS. `Path::is_absolute` is false for `/opt/x`
+    /// on Windows, so a Unix literal passes on macOS and is refused by the
+    /// login-item builders on the Windows runner.
+    #[cfg(windows)]
+    const PROGRAM: &str = "C:/Program Files/CloudFile Agent/cloudfile-desktop.exe";
+    #[cfg(not(windows))]
+    const PROGRAM: &str = "/opt/CloudFile Agent/bin/cloudfile-desktop";
+
+    /// Same, for the escaping test, which needs an `&` inside the path.
+    #[cfg(windows)]
+    const AMPERSAND: &str = "C:/a&b/bin";
+    #[cfg(not(windows))]
+    const AMPERSAND: &str = "/opt/a&b/bin";
+
+    /// Same, for the registry argument test, which needs an `.exe` suffix.
+    #[cfg(windows)]
+    const EXE: &str = "C:/CloudFileAgent22/cloudfile-desktop.exe";
+    #[cfg(not(windows))]
+    const EXE: &str = "/opt/CloudFileAgent22/cloudfile-desktop.exe";
+
     #[test]
     fn plist_is_a_well_formed_login_item() {
         let rendered = plist(
             MACOS_LABEL,
-            Path::new("/opt/CloudFile Agent/bin/cloudfile-desktop"),
+            Path::new(PROGRAM),
             &["--autostart".to_string()],
         )
         .unwrap();
         assert!(rendered.starts_with("<?xml version=\"1.0\""));
         assert!(rendered.contains("<string>com.cloudfile.agent22.autostart</string>"));
-        assert!(rendered.contains("<string>/opt/CloudFile Agent/bin/cloudfile-desktop</string>"));
+        assert!(rendered.contains(&format!("<string>{PROGRAM}</string>")));
         assert!(rendered.contains("<string>--autostart</string>"));
         assert!(rendered.contains("<key>RunAtLoad</key>"));
         assert!(rendered.contains("<key>SuccessfulExit</key>"));
@@ -236,9 +256,9 @@ mod tests {
 
     #[test]
     fn escaping_prevents_a_broken_property_list() {
-        let plist = plist(MACOS_LABEL, Path::new("/opt/a&b/bin"), &["--x".into()]).unwrap();
-        assert!(plist.contains("/opt/a&amp;b/bin"));
-        assert!(!plist.contains("/opt/a&b/bin"));
+        let plist = plist(MACOS_LABEL, Path::new(AMPERSAND), &["--x".into()]).unwrap();
+        assert!(plist.contains(&AMPERSAND.replace('&', "&amp;")));
+        assert!(!plist.contains(AMPERSAND));
     }
 
     #[test]
@@ -251,18 +271,14 @@ mod tests {
 
     #[test]
     fn run_key_arguments_are_exact_and_reversible() {
-        let add = run_key_arguments(
-            WINDOWS_VALUE,
-            Some(Path::new("/opt/CloudFileAgent22/cloudfile-desktop.exe")),
-        )
-        .unwrap();
+        let add = run_key_arguments(WINDOWS_VALUE, Some(Path::new(EXE))).unwrap();
         assert_eq!(add[0], "add");
         assert_eq!(
             add[1],
             "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
         );
         assert_eq!(add[3], "CloudFileAgent22");
-        assert_eq!(add[7], "/opt/CloudFileAgent22/cloudfile-desktop.exe");
+        assert_eq!(add[7], EXE);
         assert_eq!(add.len(), 9);
         let remove = run_key_arguments(WINDOWS_VALUE, None).unwrap();
         assert_eq!(
