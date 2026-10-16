@@ -13,6 +13,9 @@ pub mod wire;
 
 /// 子进程控制台窗口控制（其它平台是空操作）。
 pub mod childproc;
+/// 「启动」文件夹里的快捷方式（`.lnk`），仅 Windows —— 登录项的兜底途径。
+#[cfg(windows)]
+pub mod shortcut;
 /// 进程内注册表访问，仅 Windows —— 用来替代 spawn `reg.exe`。
 #[cfg(windows)]
 pub mod winreg;

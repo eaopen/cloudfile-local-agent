@@ -139,6 +139,7 @@ fn settings_get(state: tauri::State<'_, State>) -> Result<Value, String> {
         "settings": current,
         "workspace_root": cloudfile_core::workspace::tasks_root(root).to_string_lossy(),
         "autostart_enabled": autostart::enabled(),
+        "autostart_mechanism": autostart::mechanism().map(|item| item.id()),
         "install_root": update::install_root(&desktop_binary()).to_string_lossy(),
         "version": cloudfile_core::VERSION,
         "registered_host": hostreg::manifest_dir()
@@ -415,7 +416,12 @@ fn autostart_set(state: tauri::State<'_, State>, enabled: bool) -> Result<Value,
     } else {
         autostart::remove(&state.root).map_err(|error| error.to_string())?;
     }
-    Ok(json!({"autostart_enabled": autostart::enabled()}))
+    // 开关状态读操作系统（不是刚写进去的意图），途径一并返回：Run 键被策略锁住的
+    // 机器上实际用的是「启动」文件夹，界面得能把这件事说清楚。
+    Ok(json!({
+        "autostart_enabled": autostart::enabled(),
+        "autostart_mechanism": autostart::mechanism().map(|item| item.id()),
+    }))
 }
 
 #[tauri::command]

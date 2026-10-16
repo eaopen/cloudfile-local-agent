@@ -96,6 +96,7 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
                 "active_version": update::active_version(&dir, &host)?,
                 "installed_versions": update::installed_versions(&update::install_root(&binary))?,
                 "autostart": autostart::enabled(),
+                "autostart_mechanism": autostart::mechanism().map(|item| item.id()),
                 "applications": apps::names(),
                 "runtime": {
                     // The desktop shell needs WebView2 on Windows; on macOS the
@@ -161,8 +162,11 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
         }
         "--enable-autostart" => {
             let binary = desktop_binary()?;
-            autostart::install(&root, &binary)?;
+            // 说清落在哪条途径上：企业机器上 Run 键常被锁，实际生效的是
+            // 「启动」文件夹 —— 不报出来就没法解释「为什么任务管理器里看不到」。
+            let item = autostart::install(&root, &binary)?;
             println!("{}", binary.to_string_lossy());
+            println!("{}", item.id());
         }
         "--disable-autostart" => {
             autostart::remove(&root)?;

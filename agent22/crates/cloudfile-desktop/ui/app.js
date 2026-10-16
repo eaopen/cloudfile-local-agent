@@ -325,6 +325,21 @@ function showExitBanner(assessment) {
   exitBanner.hidden = false;
 }
 
+// 自启落在哪条途径上：企业机器上 Run 键常被策略锁死，实际用的是「启动」文件夹，
+// 不说清楚的话用户会以为开关是假的。
+const AUTOSTART_MECHANISMS = {
+  'run-key': '已设为开机自启（当前用户注册表 Run 键）。',
+  'startup-folder': '已设为开机自启，途径是「启动」文件夹（注册表被策略限制时的备用途径）。',
+  'launch-agent': '已设为开机自启（登录项 LaunchAgent）。',
+};
+
+function showAutostartNote(mechanism) {
+  const note = document.querySelector('#autostart_note');
+  const text = mechanism ? (AUTOSTART_MECHANISMS[mechanism] || `已设为开机自启（${mechanism}）。`) : '';
+  note.hidden = !text;
+  note.textContent = text;
+}
+
 async function loadSettings() {
   const current = await invoke('settings_get');
   document.querySelector('#notify_on_saved').checked = current.settings.notify_on_saved;
@@ -333,6 +348,7 @@ async function loadSettings() {
   document.querySelector('#float_hidden_when_empty').checked =
     current.settings.float_hidden_when_empty;
   document.querySelector('#autostart').checked = current.autostart_enabled;
+  showAutostartNote(current.autostart_mechanism);
   document.querySelector('#workspace_root').value = current.settings.workspace_root || '';
   document.querySelector('#version').textContent = `版本 ${current.version} · 安装目录 ${current.install_root}`;
 
@@ -412,6 +428,7 @@ function wire() {
         enabled: document.querySelector('#autostart').checked,
       });
       document.querySelector('#autostart').checked = autostart.autostart_enabled;
+      showAutostartNote(autostart.autostart_mechanism);
       say('本机设置已保存。');
       invoke('float_sync').catch(() => {});
     } catch (error) {

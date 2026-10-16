@@ -28,3 +28,4 @@ keyring = { version = "3.6", features = ["apple-native", "windows-native"] }
 winreg = "0.56.0"
 # GetDriveTypeW：判断某块盘是不是固定本地盘（镜像根不能落在光驱/可移动盘/网络共享上）。
 windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Foundation"] }
