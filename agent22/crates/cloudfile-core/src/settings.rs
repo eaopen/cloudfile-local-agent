@@ -147,15 +147,19 @@ pub fn set_position(root: &Path, display: &str, x: i32, y: i32) -> Result<()> {
     Ok(())
 }
 
-/// The directory working copies live in. Configuration cannot escape the store
-/// silently: a missing or unusable override falls back to the agent root.
-pub fn workspace_root(root: &Path) -> PathBuf {
-    match load(root) {
-        Ok(settings) => settings
-            .workspace_root
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.join("tasks")),
-        Err(_) => root.join("tasks"),
+/// The explicitly configured workspace root, if the user set one.
+///
+/// 显式配置时始终优先，并且**不参与搬迁**（镜像就固定在那儿）。返回值只在
+/// 配置合法且为绝对路径时给出；文件缺失、损坏或不合法都当作「没配过」，
+/// 由 `workspace::resolve` 走平台默认，绝不让一个坏配置把会话卡死。
+pub fn configured_workspace_root(root: &Path) -> Option<PathBuf> {
+    let settings = load(root).ok()?;
+    let configured = settings.workspace_root?;
+    let path = PathBuf::from(configured);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        None
     }
 }
 
@@ -226,8 +230,9 @@ mod tests {
         let root = root.as_path();
         std::fs::write(path(root), b"{ not json").unwrap();
         assert!(load(root).is_err());
-        // The fallback keeps working copies reachable instead of inventing a new root.
-        assert_eq!(workspace_root(root), root.join("tasks"));
+        // A corrupt file means "never configured" — the workspace root then falls back to
+        // the platform default (workspace::resolve) instead of inventing a broken path.
+        assert!(configured_workspace_root(root).is_none());
     }
 
     #[test]
@@ -241,7 +246,10 @@ mod tests {
         .unwrap();
         assert!(!settings.notify_on_saved);
         assert_eq!(load(root).unwrap(), settings);
-        assert_eq!(workspace_root(root), PathBuf::from(WORKSPACE));
+        assert_eq!(
+            configured_workspace_root(root),
+            Some(PathBuf::from(WORKSPACE))
+        );
         std::fs::write(path(root), br#"{"schema":1,"upload":true}"#).unwrap();
         assert!(load(root).is_err());
     }

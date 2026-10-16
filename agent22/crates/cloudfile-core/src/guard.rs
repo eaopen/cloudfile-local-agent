@@ -93,7 +93,7 @@ impl Assessment {
 /// caller may have changed the journal since the last refresh.
 pub fn assess(root: &Path) -> Assessment {
     let mut assessment = Assessment::empty();
-    let dir = root.join("tasks");
+    let dir = crate::workspace::tasks_root(root);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         // No task directory yet is the only benign miss.

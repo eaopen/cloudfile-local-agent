@@ -16,6 +16,8 @@ pub mod childproc;
 /// 进程内注册表访问，仅 Windows —— 用来替代 spawn `reg.exe`。
 #[cfg(windows)]
 pub mod winreg;
+/// 本地工作副本（镜像）根目录的策略与一次性搬迁。
+pub mod workspace;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const HOST: &str = "com.cloudfile.agent22.dev";

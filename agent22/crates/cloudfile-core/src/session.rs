@@ -169,7 +169,7 @@ pub fn task_dir(root: &Path, id: &str) -> Result<PathBuf> {
     if !task_id(id) {
         bail!("invalid task ID");
     }
-    Ok(root.join("tasks").join(id))
+    Ok(crate::workspace::tasks_root(root).join(id))
 }
 pub fn load(root: &Path, id: &str) -> Result<Task> {
     let task: Task = storage::read(&task_dir(root, id)?.join("task.json"))?;
@@ -188,7 +188,7 @@ pub fn local_path(root: &Path, task: &Task) -> Result<PathBuf> {
     Ok(p)
 }
 pub fn tasks(root: &Path) -> Result<Vec<Task>> {
-    let dir = root.join("tasks");
+    let dir = crate::workspace::tasks_root(root);
     if !dir.exists() {
         return Ok(vec![]);
     }

@@ -24,5 +24,7 @@ zeroize = "1"
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 keyring = { version = "3.6", features = ["apple-native", "windows-native"] }
 
-[target."cfg(windows)".dependencies]
+[target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
+# GetDriveTypeW：判断某块盘是不是固定本地盘（镜像根不能落在光驱/可移动盘/网络共享上）。
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }

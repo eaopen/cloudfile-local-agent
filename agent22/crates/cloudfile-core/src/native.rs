@@ -4,7 +4,7 @@
 //! interface: names, types and the `capabilities` list must match what the
 //! browser-side code already checks. Everything here is derived from the
 //! durable store on each call; nothing is cached between requests.
-use crate::{apps, device, guard, journal, session, settings, update};
+use crate::{apps, device, guard, journal, session, update};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use sha2::Digest as _;
@@ -64,6 +64,9 @@ pub fn capabilities(root: &Path) -> Vec<String> {
 }
 
 pub fn status(root: &Path) -> Value {
+    // 解析出来的工作区根可能和上次不同（首选盘回来/掉线，或用户改了配置）：
+    // 先把已有任务搬过去一次。标记一致时这里只是一次很小的文件读取。
+    let _ = crate::workspace::carry_over(root);
     let mut value = json!({
         "ok": true,
         "version": FAMILY_VERSION,
@@ -73,7 +76,7 @@ pub fn status(root: &Path) -> Value {
         "capabilities": capabilities(root),
         "applications": apps::names(),
         "release_channel": "development",
-        "workspace_root": settings::workspace_root(root).to_string_lossy(),
+        "workspace_root": crate::workspace::tasks_root(root).to_string_lossy(),
         "can_open_workspace": configured(root),
     });
     if let Ok(executable) = std::env::current_exe() {
@@ -242,7 +245,7 @@ pub fn query_local_folder(root: &Path, repo_id: &str, mode: &str) -> Value {
 /// supplies a path here; only a repository identity is accepted.
 pub fn open_workspace(root: &Path, repo_id: &str, path: &str, mode: &str) -> Value {
     if repo_id.is_empty() {
-        let target = settings::workspace_root(root);
+        let target = crate::workspace::tasks_root(root);
         if !target.is_dir() {
             return json!({"ok":false,"error":"本地工作区尚未创建"});
         }
@@ -265,7 +268,7 @@ pub fn open_workspace(root: &Path, repo_id: &str, path: &str, mode: &str) -> Val
     };
     match apps::open_directory(&directory) {
         Ok(()) => json!({"ok":true,"mode":mode_label(&task.mode),
-            "workspace_root":settings::workspace_root(root).to_string_lossy(),
+            "workspace_root":crate::workspace::tasks_root(root).to_string_lossy(),
             "local_path":directory.to_string_lossy()}),
         Err(error) => json!({"ok":false,"error":error.to_string()}),
     }

@@ -137,7 +137,7 @@ fn settings_get(state: tauri::State<'_, State>) -> Result<Value, String> {
     let current = settings::load(root).map_err(|error| error.to_string())?;
     Ok(json!({
         "settings": current,
-        "workspace_root": settings::workspace_root(root).to_string_lossy(),
+        "workspace_root": cloudfile_core::workspace::tasks_root(root).to_string_lossy(),
         "autostart_enabled": autostart::enabled(),
         "install_root": update::install_root(&desktop_binary()).to_string_lossy(),
         "version": cloudfile_core::VERSION,
@@ -466,7 +466,8 @@ fn run_update(state: tauri::State<'_, State>, force: bool) -> Result<Value, Stri
 
 #[tauri::command]
 fn open_workspace(state: tauri::State<'_, State>) -> Result<(), String> {
-    apps::open_directory(&settings::workspace_root(&state.root)).map_err(|error| error.to_string())
+    apps::open_directory(&cloudfile_core::workspace::tasks_root(&state.root))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
