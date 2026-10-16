@@ -31,7 +31,6 @@ dotnet run --project CloudFile.TaskCenter.Preview.csproj -- --taskcenter-bin C:\
 
 在 Windows 使用 `scripts/install-taskcenter-windows-v08.ps1 -Action Install -PackageDirectory <包含两个 exe 的目录>` 注册 HKCU Run 启动项；`-Action Status` 查看状态，`-Action Uninstall` 删除预览注册和预览二进制，不删除任何本地编辑副本、任务索引或 v0.7 Journal。需要先将 WinForms 项目发布为无需 SDK 的 Windows 可执行文件，并准备同架构 Go CLI。此脚本仅供开发预览，不替代正式签名安装包。
 
-
 ## 无管理员/无安装权限（v0.8 P0 硬约束）
 
 解压绿色包后，直接双击同目录 `start-taskcenter.cmd`，或者运行 `CloudFile.TaskCenter.Preview.exe --taskcenter-bin <同目录 cloudfile-taskcenter.exe>`。无需 UAC、MSI、PowerShell、系统服务、HKLM、系统目录写入、Windows 启动项，也无需目标机安装 .NET Runtime/SDK（绿色包已自包含）。
