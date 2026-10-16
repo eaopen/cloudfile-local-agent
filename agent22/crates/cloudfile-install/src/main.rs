@@ -110,6 +110,9 @@ fn run(args: &[String]) -> Result<i32> {
 
     if dry_run {
         // 只报告，不改机器：现场诊断「这台机器能不能连上通道」用。
+        // 也报出**内置的那把公钥** —— 发布方与现场都要能一眼确认「这个引导体钉的是哪把钥匙」，
+        // 否则只有等真的安装到一半报「公钥不符」才发现内置错了。公钥是公开信息，不是秘密。
+        let pinned = PINNED_KEY.filter(|key| !key.trim().is_empty());
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -121,6 +124,8 @@ fn run(args: &[String]) -> Result<i32> {
                     "source": probe.source,
                     "error": probe.error,
                 })).collect::<Vec<_>>(),
+                "pinned_public_key_set": pinned.is_some(),
+                "pinned_public_key": pinned.unwrap_or(""),
                 "forwarded_to_native_host": forwarded,
             }))?
         );

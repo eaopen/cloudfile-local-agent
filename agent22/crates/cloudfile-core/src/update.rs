@@ -818,6 +818,76 @@ mod tests {
         release
     }
 
+    /// 签名载荷的字节形状是**跨仓库契约**：通道侧的签名器
+    /// （`cloudfile-release/tools/dev-release/sign-agent22-release.py`）按同一套规则拼字符串。
+    /// 所以这里不写「意思差不多」的断言，而是把整段载荷逐字节钉死 —— Rust 侧一改字段顺序、
+    /// 分隔符或域串，这条测试立刻红，提醒同步改签名器。漏掉同步的后果不是「报错」，
+    /// 而是通道上签出的清单让所有已装 Agent 报「签名与钉住的公钥不符」。
+    #[test]
+    fn the_signing_payload_is_a_fixed_byte_string() {
+        let release = Release {
+            version: "2.2.4".into(),
+            platform: "windows-x86_64".into(),
+            notes: "dev 通道验证".into(),
+            expires_at: 1_760_000_000,
+            ipc_version: 1,
+            journal_version: 1,
+            artifacts: vec![
+                Artifact {
+                    kind: "native-host".into(),
+                    url: "https://updates.example.com/cloudfile-native-host-2.2.4.exe".into(),
+                    sha256: "0".repeat(64),
+                },
+                Artifact {
+                    kind: "desktop".into(),
+                    url: "https://updates.example.com/cloudfile-desktop-2.2.4.exe".into(),
+                    sha256: "1".repeat(64),
+                },
+            ],
+            signature: String::new(),
+        };
+        // 全部用字面量拼出来：一旦有哪个字段被「算出来」，这条测试就不再是契约了。
+        let expected = concat!(
+            "cloudfile.agent2.release.v1\n",
+            "2.2.4\n",
+            "windows-x86_64\n",
+            "dev 通道验证\n",
+            "1760000000\n",
+            "1\n",
+            "1\n",
+            "native-host\thttps://updates.example.com/cloudfile-native-host-2.2.4.exe\t",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "\n",
+            "desktop\thttps://updates.example.com/cloudfile-desktop-2.2.4.exe\t",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "\n",
+        );
+        assert_eq!(
+            String::from_utf8(signing_payload(&release)).unwrap(),
+            expected
+        );
+
+        // 签名本身**不进**载荷 —— 否则签名无法先算出来。这条不是形式主义：
+        // 把 signature 混进被签内容，会让「签名变了、内容没变」成为一个非法状态。
+        let mut resigned = release.clone();
+        resigned.signature = "whatever".into();
+        assert_eq!(signing_payload(&resigned), signing_payload(&release));
+
+        // 相邻字段之间只有 `\n`，所以载荷是否可能有歧义完全取决于各字段的取值范围。
+        // 这是安全的，而且理由必须写在这里，免得以后有人「顺手」放宽某个字段：
+        //   * `version` 由 valid_version 限定为数字点号（预发布后缀只允许字母数字 . -），
+        //     不含分隔符；
+        //   * `platform` 在 verify 里必须**等于本机平台**（固定几个取值）；
+        //   * `expires_at` / `ipc_version` / `journal_version` 是数字类型，
+        //     serde 反序列化时就不可能带换行；
+        //   * artifact 的 `kind` 只有两个合法取值、`sha256` 是 64 位小写十六进制、
+        //     `url` 还要过同源与 URL 解析。
+        // 于是唯一能塞进分隔符的只有 `notes`，而它后面紧跟着数字字段，尾巴吸收不掉。
+        let mut tweaked = release.clone();
+        tweaked.notes = "别的说明".into();
+        assert_ne!(signing_payload(&tweaked), signing_payload(&release));
+    }
+
     fn current_platform() -> String {
         platform_id(std::env::consts::OS, std::env::consts::ARCH)
     }

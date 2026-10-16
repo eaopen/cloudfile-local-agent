@@ -22,7 +22,22 @@ pub mod winreg;
 /// 本地工作副本（镜像）根目录的策略与一次性搬迁。
 pub mod workspace;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// 本构建自称的版本号。
+///
+/// 默认取工作区的 `Cargo.toml`（开发时手跑 `cargo build` 得到的就是它）；发版时由
+/// `CLOUDFILE_AGENT2_VERSION` **在编译期**注入 —— 等价于 Go 侧的
+/// `-ldflags "-X main.version=..."`。这样做而不是让发版脚本改 `Cargo.toml`，是因为
+/// 升级链路上有三处会把这个字符串当成事实来比较：清单里的 `version`、
+/// `update::probe` 拿到候选二进制 `--version` 后的比对、以及 `stage_release` 里
+/// 「报告版本必须等于清单版本」。三者必须同源，而改仓库文件的方式一旦中途失败
+/// 就会留下一个「构建出来的版本 ≠ 签发的版本」的中间态。
+///
+/// 值必须能通过 `update::valid_version`（`x.y.z`，可带 `-预发布`）；发版脚本会在
+/// 构建**之前**校验这一点，因为带着非法版本号的构建连自己的健康检查都过不去。
+pub const VERSION: &str = match option_env!("CLOUDFILE_AGENT2_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 pub const HOST: &str = "com.cloudfile.agent22.dev";
 pub fn now() -> u64 {
     std::time::SystemTime::now()

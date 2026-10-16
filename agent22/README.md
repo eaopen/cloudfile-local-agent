@@ -87,6 +87,37 @@ cloudfile-desktop --self-test                                            # 同�
 - Windows 需要 WebView2 运行时，`--status` 会报告 `runtime.webview2`；macOS 使用系统 WebKit（该字段为 `null`，表示不适用而非缺失）。不捆绑离线 WebView2，以保持包体积。
 - 当前替代目标是 **A 类：功能完全替代** —— 首次切换允许重新配对设备，但不丢失任何工作副本。原设备身份与原任务的无感原位迁移（B 类）尚未实现。
 
+### 发版（Rust 通道）
+
+Rust 与 Go 共用一台静态服务、同一个通道目录，但**产物与清单都不通用**：Go 的更新只校验 sha256，Rust 必须验签（`update::verify` 是硬策略，不会降级接受）。所以两条链路各自发各自的：
+
+| | 清单 | 产物 | 信任锚 |
+|---|---|---|---|
+| Go Agent2 | `update.json` | `cloudfile-local-agent-<v>-dev.exe` | sha256 |
+| **Rust Agent22** | **`cloudfile-agent2-update.json`** | **`cloudfile-native-host-<v>.exe` / `cloudfile-desktop-<v>.exe`** | **钉住的 P-256 公钥** |
+| 扩展（两边共用） | `extension-update.json` | `cloudfile-local-session-receiver-<v>-dev.zip` | 同源 + sha256 |
+
+版本号**在编译期注入**，不改仓库里任何文件（等价于 Go 的 `-ldflags -X`）：
+
+```sh
+CLOUDFILE_AGENT2_VERSION=2.2.4 cargo build -p cloudfile-native-host --release --locked
+```
+
+`cloudfile_core::VERSION` 优先取这个环境变量，没设才回落到工作区 `Cargo.toml` 的版本（所以开发时手跑 `cargo build` 得到的仍是开发版本）。之所以不采用「发版脚本改 Cargo.toml」：升级链路上有三处把这个字符串当事实比较（清单的 `version`、`update::probe` 拿到的 `--version`、`stage_release` 里「报告版本必须等于清单版本」），三者必须同源，而改文件的方式一旦中途失败就会留下「构建出来的版本 ≠ 签发的版本」的中间态。
+
+通道侧的签名器与发版脚本在另一个仓库（`cloudfile-release/tools/dev-release/`）：
+
+```sh
+python sign-agent22-release.py keygen dev-keys/agent22-dev.pem dev-keys/agent22-dev.pub.json
+python sign-agent22-release.py pubkey dev-keys/agent22-dev.pem          # 导出钉住的公钥
+powershell -ExecutionPolicy Bypass -File make-agent22-release.ps1 \
+    -Version 2.2.4 -ReleaseKey dev-keys/agent22-dev.pem
+```
+
+`make-agent22-release.ps1` 会构建两个产物（内置版本号）、逐个跑 `--version` 核对版本、写清单、签名、回验，并做**端到端自检**：起本地通道，用一个版本更低的探针二进制跑真实的 `--check-update`，确认签名被真实 Rust 验签器接受 —— 这是唯一能证明「Python 签名器与 `update.rs` 没漂移」的检验。
+
+跨界面的契约只有一条：`signing_payload` 的字节形状。`update.rs` 里有一条 `the_signing_payload_is_a_fixed_byte_string` 逐字节钉住它；**Rust 侧改了字段顺序或分隔符，那条测试会红**，届时必须同步改签名器，否则通道上签出的清单会让所有已装 Agent 报「签名与钉住的公钥不符」。
+
 ### 大文件 CDC 分块上传
 
 客户端开关 `CLOUDFILE_AGENT2_CDC_ENABLED=1`，需与服务端 `CLOUDFILE_AGENT2_CDC_ENABLED` 同时开启。边界与顺序：
