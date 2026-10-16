@@ -317,6 +317,82 @@ pub fn parse_release(bytes: &[u8]) -> Result<Release> {
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// 一个候选源的探测结论。`error` 为 `None` 表示这个源真的能用（清单下得来）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceProbe {
+    pub source: String,
+    pub error: Option<String>,
+}
+
+impl SourceProbe {
+    pub fn usable(&self) -> bool {
+        self.error.is_none()
+    }
+}
+
+/// 依次探测候选源，返回**第一个能用**的，以及每一项的结论。
+///
+/// 对齐 Go 侧 `install.cmd`：主源（域名）不通就用备用源（直连静态服务的 IP），
+/// 然后把这个「实际可用」的地址写回配置 —— 不然用户装完、第一次升级时才发现主源
+/// 在这台机器上根本不通。全都不通时，`probes` 里会带着每个地址各自的原因原样报给
+/// 用户；只说一句「安装失败」在现场是没用的。
+///
+/// 空串会被跳过，重复的地址只探一次（主备写成同一个地址是常见的配置失误，
+/// 不该因此多等一次超时）。
+pub fn pick_source(
+    policy: SourcePolicy,
+    candidates: &[String],
+) -> (Option<String>, Vec<SourceProbe>) {
+    let mut probe = |source: &str| fetch_manifest_for(policy, source).map(|_| ());
+    pick_source_with(&mut probe, candidates)
+}
+
+/// 探测顺序与网络分离，便于离线测试「先主后备、失败列表」这套选择逻辑。
+pub fn pick_source_with<F>(
+    probe: &mut F,
+    candidates: &[String],
+) -> (Option<String>, Vec<SourceProbe>)
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let mut probes: Vec<SourceProbe> = Vec::new();
+    for candidate in candidates {
+        let candidate = candidate.trim();
+        if candidate.is_empty() || probes.iter().any(|seen| seen.source == candidate) {
+            continue;
+        }
+        match probe(candidate) {
+            Ok(()) => {
+                probes.push(SourceProbe {
+                    source: candidate.to_string(),
+                    error: None,
+                });
+                return (Some(candidate.to_string()), probes);
+            }
+            Err(error) => probes.push(SourceProbe {
+                source: candidate.to_string(),
+                error: Some(format!("{error:#}")),
+            }),
+        }
+    }
+    (None, probes)
+}
+
+/// 把探测结论拼成给人看的一句话（失败时用）。
+pub fn describe_probes(probes: &[SourceProbe]) -> String {
+    probes
+        .iter()
+        .map(|probe| {
+            format!(
+                "{} -> {}",
+                probe.source,
+                probe.error.as_deref().unwrap_or("可用")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
 /// Fixed name under the update origin. No redirects: a re-pointed manifest
 /// would move the trust anchor away from the pinned key.
 pub fn fetch_manifest(source: &str) -> Result<Vec<u8>> {
@@ -618,6 +694,88 @@ mod tests {
         assert!(!SourcePolicy::DEV.same_origin(insecure, "https://10.9.8.162:6111/channel/x.zip"));
         // 换主机永远不行。
         assert!(!SourcePolicy::DEV.same_origin(insecure, "http://evil.example.com/x.zip"));
+    }
+
+    #[test]
+    fn the_source_probe_takes_the_first_usable_candidate() {
+        let candidates = vec![
+            "https://primary.example.com/channel".to_string(),
+            "https://mirror.example.com/channel".to_string(),
+        ];
+        // 主源可用：备源**根本不会被碰**（省掉一次超时等待）。
+        let mut tried = Vec::new();
+        let (picked, probes) = pick_source_with(
+            &mut |source: &str| {
+                tried.push(source.to_string());
+                Ok(())
+            },
+            &candidates,
+        );
+        assert_eq!(picked.as_deref(), Some(candidates[0].as_str()));
+        assert_eq!(tried, vec![candidates[0].clone()]);
+        assert!(probes[0].usable());
+
+        // 主源不通：退到备源，而且两条结论都在（现场要看到「试过谁、为什么不行」）。
+        let mut tried = Vec::new();
+        let (picked, probes) = pick_source_with(
+            &mut |source: &str| {
+                tried.push(source.to_string());
+                if source == candidates[0] {
+                    anyhow::bail!("connection refused");
+                }
+                Ok(())
+            },
+            &candidates,
+        );
+        assert_eq!(picked.as_deref(), Some(candidates[1].as_str()));
+        assert_eq!(tried, candidates);
+        assert!(!probes[0].usable());
+        assert!(probes[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("connection refused"));
+        assert!(probes[1].usable());
+        // 失败报告要能看出「谁不行、为什么」：只报「两个源都不通」在现场没有用。
+        let report = describe_probes(&probes);
+        assert!(
+            report.contains(&format!("{} -> connection refused", candidates[0])),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("{} -> 可用", candidates[1])),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn the_source_probe_skips_blanks_and_duplicates() {
+        let candidates = vec![
+            String::new(),
+            "https://only.example.com/channel".to_string(),
+            "  ".to_string(),
+            "https://only.example.com/channel".to_string(),
+            "https://other.example.com/channel".to_string(),
+        ];
+        let mut tried = Vec::new();
+        let (picked, probes) = pick_source_with(
+            &mut |source: &str| {
+                tried.push(source.to_string());
+                anyhow::bail!("unreachable")
+            },
+            &candidates,
+        );
+        assert_eq!(picked, None);
+        // 空白被跳过，重复地址只探一次。
+        assert_eq!(
+            tried,
+            vec![
+                "https://only.example.com/channel".to_string(),
+                "https://other.example.com/channel".to_string()
+            ]
+        );
+        assert_eq!(probes.len(), 2);
+        assert!(describe_probes(&probes).contains("https://only.example.com/channel ->"));
     }
 
     fn key() -> (SigningKey, String) {

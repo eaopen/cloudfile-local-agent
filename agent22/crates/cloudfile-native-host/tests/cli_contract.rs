@@ -78,6 +78,14 @@ impl Sandbox {
         serde_json::from_str(&self.run(arguments)).unwrap()
     }
 
+    /// 沙箱里的 config.json（Agent 的更新通道与扩展目录都记在这里）。
+    fn config_path(&self) -> PathBuf {
+        self.local_app_data
+            .clone()
+            .unwrap()
+            .join("CloudFileAgent22/config.json")
+    }
+
     fn manifest_dir(&self) -> PathBuf {
         if cfg!(windows) {
             self.local_app_data
@@ -332,6 +340,102 @@ fn status_reports_the_local_component_contract() {
     // directly, so an absent version is a JSON null rather than a missing key.
     assert_eq!(status["active_version"], Value::Null);
 
+    sandbox.cleanup();
+}
+
+/// 最小 HTTP 服务：给每个请求回固定 body。用来确定性地验证「主源可用时不再碰备源」——
+/// 这条特性（对齐 Go install.cmd 的主备地址）不能靠局域网碰运气来验。
+fn serve(body: &'static [u8]) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(4) {
+            let Ok(mut stream) = stream else { continue };
+            let mut buffer = [0u8; 8192];
+            let _ = std::io::Read::read(&mut stream, &mut buffer);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut stream, header.as_bytes());
+            let _ = std::io::Write::write_all(&mut stream, body);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[test]
+fn the_installer_needs_a_source_before_it_touches_anything() {
+    let sandbox = Sandbox::new();
+    let refusal = sandbox.refuses(&["--install"]);
+    assert!(refusal.contains("--source"), "{refusal}");
+    // 什么都没配：不该有任何 source 被写进去。
+    assert!(!sandbox.config_path().exists(), "配置不该被创建");
+    sandbox.cleanup();
+}
+
+#[test]
+fn the_installer_reports_every_source_it_tried() {
+    let sandbox = Sandbox::new();
+    // 两个都不通（loopback 上没人监听：立刻失败，不用等超时）。
+    let refusal = sandbox.refuses(&[
+        "--install",
+        "--source",
+        "http://127.0.0.1:1/primary",
+        "--source-fallback",
+        "http://127.0.0.1:2/mirror",
+        "--allow-insecure-source",
+    ]);
+    // 现场要看到「试过谁、为什么不行」，而不是一句「安装失败」。
+    assert!(refusal.contains("http://127.0.0.1:1/primary"), "{refusal}");
+    assert!(refusal.contains("http://127.0.0.1:2/mirror"), "{refusal}");
+    assert!(refusal.contains("不可用"), "{refusal}");
+    sandbox.cleanup();
+}
+
+#[test]
+fn the_installer_keeps_the_first_usable_source_and_writes_it_back() {
+    let sandbox = Sandbox::new();
+    // 主源可用（回环服务），备源故意指向没人监听的端口。
+    let primary = serve(br#"{"version":"0.0.0"}"#);
+    // 跳过注册/自启/启动：它们会碰真实的注册表与登录项，与本用例要验的事无关。
+    let output = sandbox
+        .command()
+        .args([
+            "--install",
+            "--source",
+            &primary,
+            "--source-fallback",
+            "http://127.0.0.1:1/mirror",
+            "--allow-insecure-source",
+            "--skip-registration",
+            "--skip-autostart",
+            "--skip-launch",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report: Value = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!(
+            "{error}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert_eq!(report["update_source"], primary.as_str());
+    // 备源**一次都没被探测**：探测列表里只有主源，而且它是可用的。
+    let probes = report["source_probes"].as_array().unwrap();
+    assert_eq!(probes.len(), 1, "{report}");
+    assert_eq!(probes[0]["source"], primary.as_str());
+    assert_eq!(probes[0]["error"], Value::Null);
+    // 没有签名公钥（开发通道）：二进制不升级，但安装照样完成。
+    assert_eq!(report["binaries"], "skipped");
+    assert!(output.status.success(), "{stdout}");
+
+    // 实际可用的地址被写回了配置：以后升级不用再猜。
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(sandbox.config_path()).unwrap()).unwrap();
+    assert_eq!(config["update_source"], primary.as_str());
+    assert_eq!(config["allow_insecure_update_source"], true);
     sandbox.cleanup();
 }
 

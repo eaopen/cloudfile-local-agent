@@ -5,6 +5,7 @@
 //! process over the file mailbox. With arguments it is a plain CLI, which is
 //! how registration, login items, upgrades and reverts are performed without
 //! a scripting runtime on the target machine.
+use anyhow::Context;
 use cloudfile_core::{
     apps, autostart, device, guard, hostreg, ipc, native, paired_session, selftest, session,
     storage, update, wire,
@@ -33,6 +34,7 @@ Usage: cloudfile-native-host [command]
   --host-state                   print the current Chrome host registration
   --enable-autostart             start the agent at login
   --disable-autostart            stop starting the agent at login
+  --install                      install or repair this machine from the update channel
   --set-update-source <url>      configure the update channel (with --public-key)
   --clear-update-source          remove the configured update channel
   --check-update                 report the available signed release, if any
@@ -42,6 +44,14 @@ Usage: cloudfile-native-host [command]
   --update-extension             install the newest browser extension and let it reload
   --rollback                     point the host back at the previous version
   --prune                        keep the active version plus one revert point
+
+Install options:
+  --source <url>                 primary update origin (probed first)
+  --source-fallback <url>        mirror used when the primary is unreachable; the one
+                                 that actually works is written back into the config
+  --skip-registration            do not register the Chrome host
+  --skip-autostart               do not add the login item
+  --skip-launch                  do not start the task centre afterwards
 
 Update options:
   --public-key <base64url>       pinned P-256 release key (required by https channels)
@@ -177,6 +187,7 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
                 }))?
             );
         }
+        "--install" => run_install(&root, &host, args)?,
         "--set-update-source" => {
             let source = flag(args, "--set-update-source")
                 .ok_or_else(|| anyhow::anyhow!("--set-update-source requires a url"))?;
@@ -320,6 +331,15 @@ fn run_update(root: &Path, host: &str, manifest: Option<PathBuf>) -> anyhow::Res
 }
 
 fn apply_update(root: &Path, host: &str, manifest: Option<PathBuf>) -> anyhow::Result<()> {
+    let (release, _, _) = fetch_verified_release(root, manifest.as_deref())?;
+    apply_release(host, &release)
+}
+
+/// 取清单并验签，返回 (清单, 策略, 源)。`--install` 复用这一段，所以它不碰安装目录。
+fn fetch_verified_release(
+    root: &Path,
+    manifest: Option<&Path>,
+) -> anyhow::Result<(update::Release, update::SourcePolicy, String)> {
     let config = session::config(root)?;
     let (source, public_key) = match (&config.update_source, &config.update_public_key) {
         (Some(source), Some(key)) => (source.clone(), key.clone()),
@@ -328,7 +348,7 @@ fn apply_update(root: &Path, host: &str, manifest: Option<PathBuf>) -> anyhow::R
         ),
     };
     let policy = config.update_policy();
-    let bytes = match &manifest {
+    let bytes = match manifest {
         Some(path) => std::fs::read(path)?,
         None => update::fetch_manifest_for(policy, &source)?,
     };
@@ -342,6 +362,195 @@ fn apply_update(root: &Path, host: &str, manifest: Option<PathBuf>) -> anyhow::R
         &update::platform_id(std::env::consts::OS, std::env::consts::ARCH),
         &public_key,
     )?;
+    Ok((release, policy, source))
+}
+
+/// 一键安装 / 修复。等价于 Go 的 `install.cmd`，区别只是目标机器**不需要任何脚本运行时**。
+///
+/// 步骤与顺序：安装目录可写 → 定源并写回（主源不通退备源）→ 有更新才换二进制 →
+/// 注册 Host → 设开机自启 → 启动任务中心。幂等：已经装好的机器重跑一遍等于修复
+/// （注册与自启重做、二进制不动）。
+fn run_install(root: &Path, host: &str, args: &[String]) -> anyhow::Result<()> {
+    // 先判「装得进去」再下载：别下完几 MB 才发现目录不可写（Go 的 :usable 也是这个顺序）。
+    let install = update::install_root(&std::env::current_exe()?);
+    ensure_install_root(&install)?;
+
+    let (source, policy, probes) = resolve_source(root, args)?;
+    let binaries = install_binaries(root, host)?;
+
+    // 注册 Host 是安装的实质产物：没有它扩展就找不到 Agent。
+    let registration = if args.iter().any(|value| value == "--skip-registration") {
+        json!({"skipped": true})
+    } else {
+        let extension_id = flag(args, "--extension-id").ok_or_else(|| {
+            anyhow::anyhow!("--install 需要 --extension-id <id>（或加 --skip-registration）")
+        })?;
+        let takeover = args.iter().any(|value| value == "--takeover");
+        let dir = hostreg::manifest_dir()?;
+        let outcome = hostreg::install(&dir, host, &extension_id, &host_binary()?, takeover)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "{error}\n\n如果确认这属于本机 Agent，请加 --takeover 重新注册；原注册会先备份并可用 --rollback-host 还原"
+                )
+            })?;
+        serde_json::to_value(outcome)?
+    };
+
+    // 自启失败**不判安装失败**：它和注册是两件事，谁挂了都不该拖累另一个
+    // （和 Go 的 Set-Autostart 一样，失败只警告）。真正重要的是别让用户没有任何入口。
+    let login_item = if args.iter().any(|value| value == "--skip-autostart") {
+        None
+    } else {
+        match desktop_binary().map(|desktop| autostart::install(root, &desktop)) {
+            Ok(Ok(item)) => Some(item.id().to_string()),
+            Ok(Err(error)) => {
+                eprintln!("警告：开机自启没设上（{error:#}）；重启后手动双击任务中心即可。");
+                None
+            }
+            Err(error) => {
+                eprintln!("警告：{error:#}；开机自启跳过。");
+                None
+            }
+        }
+    };
+
+    let launched = if args.iter().any(|value| value == "--skip-launch") {
+        false
+    } else {
+        launch_desktop()?
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "version": cloudfile_core::VERSION,
+            "install_root": install.to_string_lossy(),
+            "update_source": source,
+            "allow_insecure_update_source": policy.allow_insecure,
+            "source_probes": probes.iter().map(|probe| json!({
+                "source": probe.source,
+                "error": probe.error,
+            })).collect::<Vec<_>>(),
+            "binaries": binaries,
+            "registration": registration,
+            "login_item": login_item,
+            "desktop_started": launched,
+        }))?
+    );
+    Ok(())
+}
+
+/// 安装目录能不能真写进去：建目录 + 写一个探针文件再删掉。
+fn ensure_install_root(install: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(install)
+        .with_context(|| format!("创建安装目录失败：{}", install.display()))?;
+    let probe = install.join(".cf-write-test");
+    std::fs::write(&probe, b"ok")
+        .with_context(|| format!("安装目录不可写：{}", install.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// 定源并**把它写回配置**。
+///
+/// 给了 `--source` 就依次探测（`--source-fallback` 是备用、通常是直连静态服务的 IP），
+/// 写回的是这台机器**真的能访问**的那个 —— 否则用户装完、第一次升级时才发现主源
+/// 在这台机器上根本不通。两个都不通时，报错里带着每个地址各自的原因。
+fn resolve_source(
+    root: &Path,
+    args: &[String],
+) -> anyhow::Result<(String, update::SourcePolicy, Vec<update::SourceProbe>)> {
+    let policy = if args.iter().any(|value| value == "--allow-insecure-source") {
+        update::SourcePolicy::DEV
+    } else {
+        update::SourcePolicy::STRICT
+    };
+    let mut candidates = Vec::new();
+    if let Some(primary) = flag(args, "--source") {
+        candidates.push(primary);
+    }
+    if let Some(fallback) = flag(args, "--source-fallback") {
+        candidates.push(fallback);
+    }
+    if candidates.is_empty() {
+        // 没给地址：用这台机器上已经配好的（策略也以配置为准，见 --set-update-source）。
+        let config = session::config(root)?;
+        // 先算策略：下面的 ok_or_else 会把 update_source 移走。
+        let policy = config.update_policy();
+        let source = config.update_source.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--install 需要 --source <url>，或先用 --set-update-source 配置更新通道"
+            )
+        })?;
+        return Ok((source, policy, Vec::new()));
+    }
+
+    let (picked, probes) = update::pick_source(policy, &candidates);
+    let Some(source) = picked else {
+        anyhow::bail!(
+            "两个更新源都不可用：{}\n请检查本机能否访问上面的地址（DNS/代理/防火墙）后重试。",
+            update::describe_probes(&probes)
+        );
+    };
+    session::set_update_with_policy(
+        root,
+        Some(source.clone()),
+        flag(args, "--public-key"),
+        flag(args, "--extension-dir"),
+        policy,
+    )?;
+    Ok((source, policy, probes))
+}
+
+/// 二进制部分：清单里有更新的版本才动，已是最新就跳过（`--install` 同时是修复命令）。
+///
+/// 版本比较用的是 `cloudfile_core::VERSION`（正在跑的这份），因为后续的验签用的也是它 ——
+/// 两边用同一个基准，才不会出现「自认为有更新、验签却拒了」。
+fn install_binaries(root: &Path, host: &str) -> anyhow::Result<&'static str> {
+    let config = session::config(root)?;
+    let (Some(source), Some(_)) = (
+        config.update_source.clone(),
+        config.update_public_key.as_ref(),
+    ) else {
+        // 只有扩展通道（开发通道常见）：二进制不升级，但安装照样可以完成。
+        return Ok("skipped");
+    };
+    let policy = config.update_policy();
+    let advertised = update::parse_release(&update::fetch_manifest_for(policy, &source)?)?;
+    if update::compare(&advertised.version, cloudfile_core::VERSION) != std::cmp::Ordering::Greater
+    {
+        return Ok("current");
+    }
+    apply_update(root, host, None)?;
+    Ok("updated")
+}
+
+/// 装完立刻启动任务中心：否则用户重启之前右下角什么都没有。
+/// 桌面是 GUI 子系统程序，读写的都是自己的私有目录，启动它不会弹控制台。
+fn launch_desktop() -> anyhow::Result<bool> {
+    let desktop = desktop_binary()?;
+    let mut command = std::process::Command::new(&desktop);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cloudfile_core::childproc::hide(&mut command);
+    match command.spawn() {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            // 启动失败不算安装失败：二进制已经就位，用户可以自己双击。
+            eprintln!(
+                "警告：任务中心没能自动启动（{error}）；请手动双击 {}",
+                desktop.display()
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// 下载、暂存、健康检查、激活。顺序就是安全属性：在暂存的构建起来并回答本地协议之前，
+/// 什么都替换不了正在运行的那份。
+fn apply_release(host: &str, release: &update::Release) -> anyhow::Result<()> {
     let os = std::env::consts::OS;
     let mut files = Vec::new();
     for artifact in &release.artifacts {

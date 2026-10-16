@@ -33,7 +33,9 @@ cloudfile-native-host --host-state                                       # 查�
 cloudfile-native-host --rollback-host                                    # 还原上一次被替换的注册
 cloudfile-native-host --unregister-host                                  # 只移除本 Agent 写入的注册
 cloudfile-native-host --enable-autostart / --disable-autostart           # 可选登录启动
-cloudfile-native-host --set-update-source https://host/dir --public-key <b64>  # 配置更新通道
+cloudfile-native-host --install --source https://host/dir --source-fallback https://ip/dir \
+    --public-key <b64> --extension-id <id>                               # 一键安装/修复
+cloudfile-native-host --set-update-source https://host/dir --public-key <b64>  # 只配置更新通道
 cloudfile-native-host --clear-update-source                              # 清空更新通道
 cloudfile-native-host --check-update                                     # 报告可用的已签名版本
 cloudfile-native-host --update                                           # 下载、校验、暂存、健康检查、切换
@@ -44,6 +46,14 @@ cloudfile-native-host --status                                            # 版�
 cloudfile-native-host --self-test                                        # 本机自检（JSON；有问题时退出码非 0）
 cloudfile-desktop --self-test                                            # 同一套检查，从桌面进程那一侧看
 ```
+
+一键安装（`--install`）等价于 Go 的 `install.cmd`，但目标机器**不需要任何脚本运行时**：
+
+- **主备地址**：`--source` 是主源（域名），`--source-fallback` 是备用源（通常是直连静态服务的 IP）。依次探测，**把实际可用的那个写回配置** —— 不然用户装完、第一次升级时才发现主源在这台机器上根本不通。主源可用时备源一次都不会被探测（省掉一次超时等待）；两个都不通时报错里带着每个地址**各自的原因**，只报一句「安装失败」在现场没有用。空地址会被跳过，主备写成同一个地址只探一次。
+- **顺序**：先判安装目录可写（别下完几 MB 才发现装不进去）→ 定源并写回 → 有更新才换二进制 → 注册 Host → 设开机自启 → 启动任务中心。
+- **幂等**：已经装好的机器重跑一遍等于**修复** —— 注册与自启会重做，二进制不动（清单不比当前新就不换）。
+- 自启失败与启动失败都**不判安装失败**（各只警告一句）：它们和注册是两件事，谁挂了都不该拖累另一个，二进制已经就位、用户也能自己双击。
+- 可跳过：`--skip-registration` / `--skip-autostart` / `--skip-launch`（现场分步排查、或只想升级二进制时用）。
 
 更新通道的信任策略：
 
@@ -150,7 +160,9 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（**137 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（**142 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+安装器（`--install`）的主备源行为有确定性用例：测试里起一个回环 HTTP 服务当主源、把一个没人监听的端口当备源，断言「只探测了主源、备源一次没碰、可用的地址被写回 config.json、退出码 0」；另两条覆盖「没给地址就拒绝且不写任何配置」与「两个都不通时报出两个地址」。对真实开发通道跑 `--install` 验证了**失败路径**：主源（域名）被网络拦截、备源返回 404（通道上还没有 Rust 约定的清单），报告如实列出两条原因与各自地址。
+
 扩展自更新**整条链路**已对着真实开发通道实测：`--set-update-source http://10.9.8.162:6111/cloudfile-updates-dev --allow-insecure-source` → `--update-extension` 从明文 http 下载真实发布的包（摘要与清单一致）、解出 10 个条目（含 `icons/` 子目录）、装成 1.0.4；`--self-test` 随后如实报出「已显式放行明文 http」与「1.0.4」，不带开关时同一命令被拒（`must be a canonical https origin`）。
 Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` 的注册表步骤、`cli_contract` 的注册与接管）**不再依赖 `reg.exe`**：注册表是进程内读写的，所以这些用例在禁用 `reg.exe` 的环境里也能跑、也会绿。
 其中 `cloudfile-native-host/tests/cli_contract.rs` 与 `cloudfile-desktop/tests/cli_contract.rs` 直接运行真实二进制，并把 `HOME`（Windows 另加 `LOCALAPPDATA`）重定向到临时目录，因此注册、接管、回退、卸载、健康检查与协议自检都不触碰开发机上的真实 Chrome 注册。
@@ -160,7 +172,7 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 - **Windows 实机**。注册表读写、WebView2 探测与登录项的两条途径（`Run` 键写入 → 读回 → 撤销，「启动」文件夹 `.lnk` 写入 → 读回 → 撤销，含 shell 路径与文档化公式一致）已在 Windows 11 上实测；**Tauri 窗口与托盘行为、应用探测的真机回归仍未做**。
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
 - **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
-- **Rust Agent 自身的更新**。通道侧仍需提供符合 Rust 约定的清单：源要写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`。现有开发通道里的 `update.json` 是给 Go 侧用的，名字与位置都不同，所以 **Rust Agent 的自我升级还没法在开发通道上跑**（扩展更新不受影响，已经实测通过）。
+- **Rust Agent 自身的更新（一键安装的“换二进制”那一步）**。通道侧必须先提供符合 Rust 约定的清单：源写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`。现有开发通道里只有给 Go 侧用的 `update.json`（名字与位置都不同），所以 `--install`/`--update` 走到下载那一步必然 404 —— 这不是 Rust 侧的缺陷，而是**通道侧待补**（扩展更新不受影响，已经实测通过）。补齐后，`--install` 的端到端才算真的走完。
 - **无感原位升级（B 类）**。不迁移旧设备身份与原任务，首次切换需重新配对。
 - **Code signing / 公证 / 运行时安装器**。当前 ZIP 是开发包。
 
