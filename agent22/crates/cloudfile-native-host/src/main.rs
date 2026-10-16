@@ -6,11 +6,18 @@
 //! how registration, login items, upgrades and reverts are performed without
 //! a scripting runtime on the target machine.
 use cloudfile_core::{
-    apps, autostart, device, guard, hostreg, ipc, native, paired_session, session, storage, update,
-    wire,
+    apps, autostart, device, guard, hostreg, ipc, native, paired_session, selftest, session,
+    storage, update, wire,
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+
+/// 桌面进程的文件名：安装时与 native host 同级，自检与更新都按它找。
+const DESKTOP_NAME: &str = if cfg!(windows) {
+    "cloudfile-desktop.exe"
+} else {
+    "cloudfile-desktop"
+};
 
 const USAGE: &str = "\
 CloudFile Agent 2.2
@@ -27,6 +34,7 @@ Usage: cloudfile-native-host [command]
   --enable-autostart             start the agent at login
   --disable-autostart            stop starting the agent at login
   --check-update                 report the available signed release, if any
+  --self-test                    check the local installation and exit (JSON, non-zero when broken)
   --update                       download, verify, stage and activate an update
   --update-from <manifest>       run an update from a local signed manifest
   --update-extension             install the newest browser extension and let it reload
@@ -179,6 +187,17 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
                 serde_json::to_string_pretty(&native::check_update(&root))?
             );
         }
+        "--self-test" => {
+            // 「搭档」是桌面进程：Agent 能跑，但用户没有入口。装的时候两个一起装，
+            // 所以缺了就该报出来（读不到路径时用文件名占位，报告里会指出找不到）。
+            let peer = desktop_binary().unwrap_or_else(|_| PathBuf::from(DESKTOP_NAME));
+            let report = selftest::run(&root, &peer);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report["ok"] != json!(true) {
+                // 退出码要能被脚本判：0 = 全绿，1 = 有项确实不工作。
+                std::process::exit(1);
+            }
+        }
         "--update" => run_update(&root, &host, None)?,
         "--update-extension" => {
             native::record_update_result(&root, "extension", "running");
@@ -224,11 +243,7 @@ fn host_binary() -> anyhow::Result<PathBuf> {
 /// protocol depends on that, and so does the login item.
 fn desktop_binary() -> anyhow::Result<PathBuf> {
     let host = host_binary()?;
-    let name = if cfg!(windows) {
-        "cloudfile-desktop.exe"
-    } else {
-        "cloudfile-desktop"
-    };
+    let name = DESKTOP_NAME;
     let directory = host
         .parent()
         .ok_or_else(|| anyhow::anyhow!("native host has no install directory"))?;

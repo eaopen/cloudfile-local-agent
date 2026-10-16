@@ -35,9 +35,12 @@ cloudfile-native-host --unregister-host                                  # 只�
 cloudfile-native-host --enable-autostart / --disable-autostart           # 可选登录启动
 cloudfile-native-host --check-update                                     # 报告可用的已签名版本
 cloudfile-native-host --update                                           # 下载、校验、暂存、健康检查、切换
+cloudfile-native-host --update-extension                                 # 装最新扩展包，再由扩展自己重载
 cloudfile-native-host --rollback                                         # 指回上一个版本目录
 cloudfile-native-host --prune                                            # 只保留当前版本 + 一个回退点
 cloudfile-native-host --status                                            # 版本、注册、运行时、应用检测、退出风险
+cloudfile-native-host --self-test                                        # 本机自检（JSON；有问题时退出码非 0）
+cloudfile-desktop --self-test                                            # 同一套检查，从桌面进程那一侧看
 ```
 
 规则：
@@ -125,6 +128,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 - `cloudfile-core` 的三个 Windows 底层保障模块：`winreg`（进程内读写注册表）、`childproc`（子进程不弹控制台窗口）、`shortcut`（「启动」文件夹里的 `.lnk`）。注册、登录项、WebView2 探测、应用探测**一律走它们**，不再 spawn `reg.exe`——否则父进程是 GUI（Tauri 桌面）时每次调用都会闪一个黑窗口，而且在禁用 `reg.exe` 的机器上会直接失败而不是降级。只有「打开文档的应用」与「必须脱离宿主存活的升级进程」例外，前者需要窗口、后者用 `DETACHED_PROCESS` 自带无控制台。
 - Windows 的登录项有**两条途径**，装的时候依次尝试：先写当前用户的 `Run` 键，被组策略或安全软件锁住时（企业机器上常见）退到「启动」文件夹里的 `CloudFileAgent22.lnk`。两条都用 `IShellLinkW`/`IPersistFile` 由 shell 自己维护格式，不手写二进制。`--status` 与设置界面会报出实际生效的是哪一条（`run-key` / `startup-folder`），因为这两种情况在任务管理器里长得完全不一样。两条途径都带上 `--autostart`：登录启动必须进托盘而不是抢焦点。
 - `cloudfile-native-host`：有界 stdio 消息、本机请求转交，以及安装/升级/回退用的命令行。
+- 本机自检（`selftest` 模块）：把「这台机器上装的东西到底能不能工作」变成一次可脚本化的问答（`--self-test`，两个入口共用同一套检查）。十二项各自独立跑、独立报，输出固定形状的 JSON，有项确实不工作时退出码非 0。**刻意不创建窗口、不发网络请求**：建窗口依赖窗口站/桌面会话，在服务、SSH、CI 上必然不稳，自检本身变成「时好时坏」就没有价值；网络请求要等超时，会把「10 秒出结论」拖成「30 秒也不一定」。更新源只报「配没配、够不够用」，内容对不对由 `--check-update` 回答。
 - 浏览器扩展的自更新（`extension` 模块）：与 Agent 清单**同级、同一个源**的 `extension-update.json`（`version` / `zip_url` / `sha256` / `notes`），下载后校验 sha256、解包到临时目录、核对包内 `manifest.json` 的版本与清单一致，再整体改名换过去。归档按不可信输入处理：绝对路径、`..`、反斜杠（Windows 上的 zip slip）、符号链接、非普通文件、超过 256 MiB 一律拒绝，且只写新建文件。替换前上一版会改名到 `<dir>.prior`，换不过去就放回原位；`<dir>.prior` 已存在时拒绝动作，等人工看一眼。装完由扩展自己 `chrome.runtime.reload()` 生效——Chrome 不允许外部进程替换已加载的扩展，所以这一步结束时是「文件已就位」，不是「已生效」。
 - `cloudfile-desktop`：唯一任务执行进程与轻量静态界面（`ui/` 下四组静态资源：任务中心、悬浮入口、轻提示、样式），无 Node 运行时。
 
@@ -137,7 +141,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（`cloudfile-core` + `cloudfile-native-host` 共 **118 项**在本机 Windows 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`；`cloudfile-desktop` 的 `cli_contract` 由 CI 在 macOS/Windows 上跑）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（**130 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
 扩展自更新的**文件侧**另用开发通道里真实发布的包实测过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、包内版本与清单核对、重复安装幂等）。
 Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` 的注册表步骤、`cli_contract` 的注册与接管）**不再依赖 `reg.exe`**：注册表是进程内读写的，所以这些用例在禁用 `reg.exe` 的环境里也能跑、也会绿。
 其中 `cloudfile-native-host/tests/cli_contract.rs` 与 `cloudfile-desktop/tests/cli_contract.rs` 直接运行真实二进制，并把 `HOME`（Windows 另加 `LOCALAPPDATA`）重定向到临时目录，因此注册、接管、回退、卸载、健康检查与协议自检都不触碰开发机上的真实 Chrome 注册。

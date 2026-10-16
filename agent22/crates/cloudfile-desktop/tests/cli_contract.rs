@@ -57,3 +57,42 @@ fn help_lists_the_login_item_flag() {
     assert!(stdout.contains("--autostart"), "{stdout}");
     assert!(stdout.contains("--version"), "{stdout}");
 }
+
+#[test]
+fn help_lists_the_self_test_flag() {
+    let output = desktop(&["--help"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--self-test"), "{stdout}");
+    // 帮助文本要说明它不开窗口，否则没人敢在自动化里用。
+    assert!(stdout.contains("never opens a window"), "{stdout}");
+}
+
+#[test]
+fn the_self_test_answers_with_json_and_never_opens_a_window() {
+    let output = desktop(&["--self-test"]);
+    // 0 = 全绿；1 = 有项确实不工作。两者都说明它跑完了并给出了结论
+    // （本机有没有 native host 是环境差异，不是这个用例要判的事）。
+    assert!(
+        matches!(output.status.code(), Some(0) | Some(1)),
+        "self-test did not finish: {output:?}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("self-test output is not JSON");
+    let checks = report["checks"].as_array().unwrap();
+    assert!(checks.len() >= 10, "{}", checks.len());
+    assert!(report["root"]
+        .as_str()
+        .unwrap()
+        .contains("CloudFileAgent22"));
+    // 报告全在 stdout：解析失败的原因要能直接看到。
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 建窗口之前就结束，所以不会留下常驻进程（这条用例本身会挂住而不是失败）。
+    assert!(
+        checks.iter().any(|check| check["name"] == "peer-binary"),
+        "peer-binary check missing"
+    );
+}

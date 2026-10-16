@@ -38,7 +38,13 @@ impl Sandbox {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cloudfile-native-host"));
+        self.command_at(Path::new(env!("CARGO_BIN_EXE_cloudfile-native-host")))
+    }
+
+    /// 同一套沙箱环境，但跑的是**另一个位置**的二进制（例如复制到孤立目录的副本，
+    /// 用来复现「旁边没有桌面进程」的半截安装）。
+    fn command_at(&self, binary: &Path) -> Command {
+        let mut command = Command::new(binary);
         command.env("HOME", &self.home);
         command.env("USERPROFILE", &self.home);
         if let Some(local) = &self.local_app_data {
@@ -325,6 +331,103 @@ fn status_reports_the_local_component_contract() {
     // No manifest yet, so nothing is active. The extension reads this field
     // directly, so an absent version is a JSON null rather than a missing key.
     assert_eq!(status["active_version"], Value::Null);
+
+    sandbox.cleanup();
+}
+
+#[test]
+fn the_self_test_reports_every_check_and_exits_non_zero_when_something_is_broken() {
+    let sandbox = Sandbox::new();
+    // 把 native host 复制到一个孤立目录里跑：它旁边没有桌面进程，等于「装了半个」。
+    // 这样「坏掉时退出码非 0」是确定性可复现的，不依赖构建目录里恰好有没有那个二进制。
+    let isolated = tempfile::tempdir().unwrap();
+    let copy = isolated.path().join(if cfg!(windows) {
+        "cloudfile-native-host.exe"
+    } else {
+        "cloudfile-native-host"
+    });
+    std::fs::copy(env!("CARGO_BIN_EXE_cloudfile-native-host"), &copy).unwrap();
+    let output = sandbox
+        .command_at(&copy)
+        .args(["--self-test"])
+        .output()
+        .expect("self-test did not run");
+    // 报告走 stdout（调用方按 stdout 解析），退出码用来给脚本判。
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("self-test output is not JSON");
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "半截安装必须报成不健康：{report}"
+    );
+    assert_eq!(report["ok"], false);
+
+    let checks = report["checks"].as_array().unwrap();
+    let names: Vec<&str> = checks
+        .iter()
+        .map(|check| check["name"].as_str().unwrap())
+        .collect();
+    // 名字是给现场排查用的接口，改名要同步改这里。
+    for expected in [
+        "private-store",
+        "mailbox",
+        "single-instance",
+        "peer-binary",
+        "component",
+        "registration",
+        "task-store",
+        "exit-assessment",
+        "webview2",
+        "extension",
+        "login-item",
+        "update-source",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+
+    let find = |name: &str| {
+        checks
+            .iter()
+            .find(|check| check["name"] == name)
+            .unwrap_or_else(|| panic!("{name} missing"))
+            .clone()
+    };
+    // 缺的就是搭档程序，而且原因要带上文件名，不能只说「失败」。
+    assert_eq!(find("peer-binary")["ok"], false);
+    assert!(find("peer-binary")["detail"]
+        .as_str()
+        .unwrap()
+        .contains("cloudfile-desktop"));
+    // 私有目录那一项在沙箱里必须真的通（写进去又删掉）。
+    assert_eq!(find("private-store")["ok"], true);
+    // 从没配过更新源：如实报「未配置」，不算失败。
+    assert_eq!(find("update-source")["detail"], "未配置");
+    // 探针文件不许留在沙箱里。
+    let root = sandbox
+        .local_app_data
+        .clone()
+        .unwrap()
+        .join("CloudFileAgent22");
+    assert!(!root.join("self-test.json").exists());
+    assert!(!root.join("self-test.lock").exists());
+
+    // 原地跑一次：退出码必须与报告一致。写死 0 或 1 都会在某些机器上误判 ——
+    // 搭档程序在不在取决于构建目录里有没有它。
+    let output = sandbox.command().args(["--self-test"]).output().unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(report["ok"] != true)),
+        "{report}"
+    );
 
     sandbox.cleanup();
 }

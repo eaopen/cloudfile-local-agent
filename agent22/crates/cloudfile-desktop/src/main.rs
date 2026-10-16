@@ -45,14 +45,16 @@ fn desktop_binary() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cloudfile-desktop"))
 }
 
+/// native host 的文件名：安装时与桌面进程同级（注册、更新、自检都按它找）。
+const HOST_NAME: &str = if cfg!(windows) {
+    "cloudfile-native-host.exe"
+} else {
+    "cloudfile-native-host"
+};
+
 fn host_binary() -> Option<PathBuf> {
     let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let name = if cfg!(windows) {
-        "cloudfile-native-host.exe"
-    } else {
-        "cloudfile-native-host"
-    };
-    let candidate = directory.join(name);
+    let candidate = directory.join(HOST_NAME);
     candidate.is_file().then_some(candidate)
 }
 
@@ -638,10 +640,12 @@ fn refresh_tray(state: &State, app: &tauri::AppHandle) {
 const USAGE: &str = "\
 CloudFile Agent 2.2 desktop
 
-Usage: cloudfile-desktop [--autostart]
+Usage: cloudfile-desktop [--self-test] [--autostart]
 
   --version     print the build version
   --component   print the local component contract as JSON
+  --self-test   check the local installation and exit (JSON, non-zero when broken);
+                never opens a window, so it is safe in automation
   --help, -h    print this message
   --autostart   start resident in the tray without opening the window; the login
                 item passes this so logging in never steals focus
@@ -672,6 +676,10 @@ fn main() {
             );
             return;
         }
+        Some("--self-test") => {
+            // 自检必须在**建窗口之前**结束：它要在装坏了的机器上也能给出结论。
+            std::process::exit(self_test());
+        }
         Some("--help") | Some("-h") => {
             print!("{USAGE}");
             return;
@@ -687,6 +695,31 @@ fn main() {
     if let Err(error) = run(autostart) {
         eprintln!("CloudFile desktop: {error}");
     }
+}
+
+/// 打印自检报告并给出退出码（0 = 全绿，1 = 有项确实不工作，2 = 连自己的目录都定位不到）。
+fn self_test() -> i32 {
+    let root = match cloudfile_core::storage::root() {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("CloudFile desktop: 无法定位本机私有目录：{error:#}");
+            return 2;
+        }
+    };
+    // 搭档是 native host：桌面进程缺了它就注册不上 Chrome，等于半个安装。
+    let peer = host_binary().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .unwrap_or_default()
+            .join(HOST_NAME)
+    });
+    let report = cloudfile_core::selftest::run(&root, &peer);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_default()
+    );
+    i32::from(report["ok"] != json!(true))
 }
 
 fn run(autostart: bool) -> anyhow::Result<()> {
