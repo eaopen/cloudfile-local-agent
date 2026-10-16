@@ -38,6 +38,8 @@ pub struct Outcome {
     pub state: String,
     /// 目标里最终应有的任务目录数。
     pub tasks: usize,
+    /// 实际复制过去的文件数（一个任务目录里通常还有一个 task.json）。
+    pub files: usize,
     pub bytes: u64,
     /// 目标已有同名文件而没动的个数（永不覆盖）。
     pub skipped: usize,
@@ -184,6 +186,7 @@ pub fn carry_over_to(app_root: &Path, root: &Path) -> Outcome {
         at: crate::now(),
         state: "settled".to_string(),
         tasks: 0,
+        files: 0,
         bytes: 0,
         skipped: 0,
         missing: 0,
@@ -216,7 +219,7 @@ pub fn carry_over_to(app_root: &Path, root: &Path) -> Outcome {
     match copy_tasks(&source, root) {
         Ok((copied, skipped)) => {
             outcome.skipped = skipped;
-            outcome.tasks = copied;
+            outcome.files = copied;
             match verify_tasks(&source, root) {
                 Ok(0) => {
                     outcome.state = "done".to_string();
@@ -467,7 +470,8 @@ mod tests {
         let (_, expected_bytes) = mirror_size(&old);
         let outcome = carry_over_to(&old, &new);
         assert_eq!(outcome.state, "done");
-        assert_eq!(outcome.tasks, 2);
+        assert_eq!(outcome.tasks, 2, "两个任务目录都该搬过去");
+        assert_eq!(outcome.files, 4, "每个任务目录里是 task.json + 工作副本");
         // 报出来的字节数就是来源的镜像大小（含每个任务的 task.json）。
         assert_eq!(outcome.bytes, expected_bytes);
         assert!(outcome.bytes > 0);
