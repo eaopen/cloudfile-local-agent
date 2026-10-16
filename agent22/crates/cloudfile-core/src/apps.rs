@@ -104,7 +104,10 @@ impl OpenRule {
 /// same family as `optimistic-edit` because it publishes native updates.
 /// `local-view` stays distinct so a read-only copy cannot be routed into an
 /// editing rule.
-pub fn mode_family(mode: &str) -> &str {
+///
+/// 这是**模式名的唯一映射**：`native::mode_label` 直接复用它。各写一份的后果已经出现过
+/// ——那边把 `local-view` 也报成 `local-edit`，等于告诉网页「这是一份可编辑副本」。
+pub fn mode_family(mode: &str) -> &'static str {
     match mode {
         "exclusive-edit" => "exclusive-edit",
         "local-view" => "local-view",

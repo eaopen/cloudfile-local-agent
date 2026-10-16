@@ -106,21 +106,50 @@ pub fn status(root: &Path) -> Value {
 }
 
 /// Maps an internal mode onto the two values the extension understands.
+/// 回报给浏览器的模式名。**直接复用 `apps::mode_family`**，不再各写一份：以前这里把
+/// `local-view` 也说成 `local-edit`，与 `apps` 里「只读副本不得进编辑规则」的映射自相矛盾
+/// —— 一句「这是可编辑的」就可能让网页把只读的查看副本当成工作副本。
 pub fn mode_label(mode: &str) -> &'static str {
-    if mode == "exclusive-edit" {
-        "exclusive-edit"
-    } else {
-        "local-edit"
+    apps::mode_family(mode)
+}
+
+/// 一份本地副本属于哪个**子树**。
+///
+/// Rust 的模式名比 Go 多（`optimistic-edit` 与 `local-edit` 是同族的两个名字，另有
+/// `exclusive-edit`），但子树只有三个：查看（只读）、可编辑、独占可编辑。请求与任务在
+/// **这一层**比较 —— 按字符串字面比会把 `optimistic-edit` 判成「不匹配 local-edit」，
+/// 那是把同族的两个名字当成了两个子树。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Subtree {
+    View,
+    Edit,
+    Exclusive,
+}
+
+impl Subtree {
+    fn of(task_mode: &str) -> Subtree {
+        match task_mode {
+            "local-view" => Subtree::View,
+            "exclusive-edit" => Subtree::Exclusive,
+            _ => Subtree::Edit,
+        }
+    }
+
+    /// 请求要查哪个子树。**只有显式的 `local-view` 才落到查看子树，其余一律按可编辑处理**
+    /// —— 与 Go 的 `Request.MirrorMode()` 同义（理由照抄：编辑子树是唯一不会被「查看」打开
+    /// 覆盖的那个）。反过来才是真会伤人的：查看副本是**只读**的，把它当成编辑副本交给用户，
+    /// 用户改完根本存不进去。
+    fn requested(mode: &str) -> Subtree {
+        match mode {
+            "local-view" => Subtree::View,
+            "exclusive-edit" => Subtree::Exclusive,
+            _ => Subtree::Edit,
+        }
     }
 }
 
 fn matches_mode(task_mode: &str, requested: &str) -> bool {
-    match requested {
-        "" => true,
-        "exclusive-edit" => task_mode == "exclusive-edit",
-        "local-edit" => task_mode != "exclusive-edit",
-        _ => false,
-    }
+    Subtree::of(task_mode) == Subtree::requested(requested)
 }
 
 fn find(root: &Path, repo_id: &str, path: &str, mode: &str) -> Result<Option<session::Task>> {
@@ -130,18 +159,28 @@ fn find(root: &Path, repo_id: &str, path: &str, mode: &str) -> Result<Option<ses
     if !path.is_empty() && !path.starts_with('/') {
         bail!("repository path must be absolute");
     }
-    if !matches!(mode, "" | "local-edit" | "exclusive-edit") {
+    // `local-view` 同样是合法请求（Go 的 `Request.Valid()` 也认它）：网页会用它查
+    // 「这个资料库的查看副本在不在」。以前这里会报「unsupported session mode」。
+    if !matches!(mode, "" | "local-edit" | "local-view" | "exclusive-edit") {
         bail!("unsupported session mode");
     }
-    for task in session::tasks(root)? {
-        if task.repo_id != repo_id || !matches_mode(&task.mode, mode) {
-            continue;
-        }
-        if path.is_empty() || task.remote_path == path {
-            return Ok(Some(task));
+    let mut matches: Vec<session::Task> = session::tasks(root)?
+        .into_iter()
+        .filter(|task| task.repo_id == repo_id && matches_mode(&task.mode, mode))
+        .filter(|task| path.is_empty() || task.remote_path == path)
+        .collect();
+    // 挑选顺序固定下来：请求写明了模式名就优先精确命中，否则偏好规范名 `local-edit`，
+    // 再否则取第一个。**不能依赖目录枚举顺序** —— 同一份文件在可编辑子树里可能同时有
+    // `local-edit` 与 `optimistic-edit` 两份任务，结果飘忽是很难查的那类 bug。
+    if !mode.is_empty() {
+        if let Some(position) = matches.iter().position(|task| task.mode == mode) {
+            return Ok(Some(matches.swap_remove(position)));
         }
     }
-    Ok(None)
+    if let Some(position) = matches.iter().position(|task| task.mode == "local-edit") {
+        return Ok(Some(matches.swap_remove(position)));
+    }
+    Ok(matches.into_iter().next())
 }
 
 /// Public task list. Field names follow the extension contract; local paths and
@@ -535,6 +574,87 @@ mod tests {
         assert_eq!(value["update_available"], false);
         assert_eq!(value["update_source_set"], false);
         assert!(value["ok"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn a_read_only_view_copy_is_never_handed_out_as_an_editable_one() {
+        let (_dir, base) = crate::storage::test_root();
+        let root = base.as_path();
+        // 查看副本（只读）与编辑副本是两份不同的任务，目录也不同。
+        let view = store(root, "local-view", "a.txt");
+        assert!(view.task_id != store(root, "local-edit", "a.txt").task_id);
+
+        // 查看请求必须查得到它 —— 以前这里直接报「unsupported session mode」，
+        // 网页就没法判断「这个资料库的查看副本在不在」。
+        let found = query_local_file(root, &view.repo_id, &view.remote_path, "local-view");
+        assert_eq!(found.get("ok"), Some(&json!(true)), "{found}");
+        assert_eq!(found["local_exists"], true, "{found}");
+        assert_eq!(found["mode"], "local-view", "{found}");
+
+        // 反过来才是会伤人的：缺省请求与 local-edit 请求都**不能**命中只读的查看副本。
+        for requested in ["", "local-edit"] {
+            let answer = query_local_file(root, &view.repo_id, "/folder/only-view.txt", requested);
+            assert_eq!(answer["local_exists"], false, "{requested}: {answer}");
+        }
+        // 让查看子树单独存在一份文件，确认上面那个 false 不是因为「查不到任何东西」。
+        store(root, "local-view", "only-view.txt");
+        let answer = query_local_file(root, &view.repo_id, "/folder/only-view.txt", "local-edit");
+        assert_eq!(answer["local_exists"], false, "{answer}");
+        assert_eq!(
+            query_local_file(root, &view.repo_id, "/folder/only-view.txt", "local-view")
+                ["local_exists"],
+            true
+        );
+        // 目录查询同样不许把查看子树当成编辑子树。
+        assert_eq!(
+            query_local_folder(root, &view.repo_id, "local-edit")["mode"],
+            "local-edit"
+        );
+    }
+
+    #[test]
+    fn the_same_library_path_in_two_editable_names_picks_deterministically() {
+        let (_dir, base) = crate::storage::test_root();
+        let root = base.as_path();
+        // 可编辑子树里 `local-edit` 与 `optimistic-edit` 是**同族两个名字**，
+        // 所以缺省请求同时命中两者；结果必须确定，不能取决于目录枚举顺序。
+        let optimistic = store(root, "optimistic-edit", "a.txt");
+        store(root, "local-edit", "a.txt");
+
+        for _ in 0..4 {
+            let answer = query_local_file(root, &optimistic.repo_id, &optimistic.remote_path, "");
+            assert_eq!(answer["local_exists"], true);
+            // 缺省命中规范名 `local-edit`。
+            assert_eq!(answer["baseline_file_id"], "e".repeat(40));
+            assert_eq!(answer["local_digest"], optimistic.baseline_digest);
+        }
+        // 写明模式名时精确命中优先。
+        let explicit = query_local_file(
+            root,
+            &optimistic.repo_id,
+            &optimistic.remote_path,
+            "local-edit",
+        );
+        assert_eq!(explicit["local_exists"], true);
+        // 同族的另一个名字仍然查得到（不是字面比较）。
+        assert_eq!(
+            query_local_file(
+                root,
+                &optimistic.repo_id,
+                &optimistic.remote_path,
+                "local-edit"
+            )["mode"],
+            "local-edit"
+        );
+    }
+
+    #[test]
+    fn the_mode_vocabulary_is_reported_without_flattening_view_copies() {
+        assert_eq!(mode_label("local-view"), "local-view");
+        assert_eq!(mode_label("exclusive-edit"), "exclusive-edit");
+        assert_eq!(mode_label("optimistic-edit"), "local-edit");
+        assert_eq!(mode_label("local-edit"), "local-edit");
+        assert_eq!(mode_label(""), "local-edit");
     }
 
     #[test]
