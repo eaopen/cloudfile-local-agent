@@ -945,7 +945,7 @@ fn run(autostart: bool) -> anyhow::Result<()> {
                         }
                     }
                     wire::Request::Update {} | wire::Request::UpdateExtension {} => {
-                        wire::error("请在任务中心或命令行执行更新")
+                        wire::error("请在命令行执行 cloudfile-native-host --update 或 --update-extension")
                     }
                     request @ wire::Request::Open { .. } => match session::open_session(&root, request) {
                         Ok(task) => {

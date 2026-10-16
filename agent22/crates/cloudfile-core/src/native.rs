@@ -5,7 +5,7 @@
 //! browser-side code already checks. Everything here is derived from the
 //! durable store on each call; nothing is cached between requests.
 use crate::{apps, device, guard, journal, session, update};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::Digest as _;
 use std::path::Path;
@@ -297,13 +297,7 @@ fn update_result_path(root: &Path) -> std::path::PathBuf {
 /// Only a version string is exposed; the directory never leaves the agent.
 fn extension_installed_version(config: &session::Config) -> Option<String> {
     let directory = config.extension_dir.as_ref()?;
-    let manifest = Path::new(directory).join("manifest.json");
-    let value: Value = crate::storage::read(&manifest).ok()?;
-    let version = value["version"].as_str()?.to_string();
-    if version.is_empty() || version.len() > 32 || version.chars().any(char::is_control) {
-        return None;
-    }
-    Some(version)
+    crate::extension::installed_version(Path::new(directory))
 }
 
 pub fn record_update_result(root: &Path, kind: &str, state: &str) {
@@ -328,16 +322,22 @@ pub fn load_update_result(root: &Path) -> Option<Value> {
 /// extension only uses the answer to show an update hint.
 pub fn check_update(root: &Path) -> Value {
     let config = session::config(root).unwrap_or_default();
-    let (Some(source), Some(public_key)) = (
-        config.update_source.clone(),
-        config.update_public_key.clone(),
-    ) else {
-        return json!({"update_source_set": false, "update_available": false});
+    let mut value = json!({"update_source_set": false, "update_available": false});
+    let Some(source) = config.update_source.clone() else {
+        return value;
     };
-    let mut value = json!({"update_source_set": true, "update_available": false});
+    value["update_source_set"] = json!(true);
     if let Some(version) = extension_installed_version(&config) {
         value["extension_installed_version"] = json!(version);
     }
+    // 扩展清单与 Agent 清单同级、同一个源，而且**不需要签名**（信任锚是同源 https
+    // + sha256）：扩展不是可执行文件，装错版本不会在用户机器上执行代码。所以这一节
+    // 只看更新源，公钥缺失不该让扩展升级变成「不可用」。
+    describe_extension_update(&source, &mut value);
+
+    let Some(public_key) = config.update_public_key.clone() else {
+        return value;
+    };
     match update::fetch_manifest(&source) {
         Ok(bytes) => match update::parse_release(&bytes) {
             Ok(release) => {
@@ -363,6 +363,58 @@ pub fn check_update(root: &Path) -> Value {
         Err(error) => value["update_error"] = json!(error.to_string()),
     }
     value
+}
+
+/// 扩展一侧的版本信息。扩展等的是
+/// `extension_latest_version == extension_installed_version`，两个都给不出来它就无法
+/// 自己重载；取不到清单只是没提示，不是错误。
+fn describe_extension_update(source: &str, value: &mut Value) {
+    let Ok(release) = crate::extension::fetch_release(source) else {
+        return;
+    };
+    value["extension_latest_version"] = json!(release.version);
+    value["extension_notes"] = json!(release.notes);
+    if let Some(installed) = value["extension_installed_version"].as_str() {
+        // 已安装版本比源上还新（或相等）时不算「有更新」—— 版本号只用来提示。
+        value["extension_update_available"] =
+            json!(update::compare(&release.version, installed).is_gt());
+    }
+}
+
+/// 下载并安装扩展的新版本，返回给人看的一句话。
+///
+/// 装的是**磁盘上的扩展目录**（Chrome 以 `--load-extension` 加载的那份）。装完还需要
+/// 扩展自己调用 `chrome.runtime.reload()`：Chrome 不允许外部进程替换已加载的扩展，
+/// 所以这里结束在「文件已就位」，与 Go 侧 `--update-extension` 一致。
+pub fn update_extension(root: &Path) -> Result<String> {
+    let config = session::config(root)?;
+    let source = config
+        .update_source
+        .context("尚未配置更新源；请先在 config.json 里设置 update_source")?;
+    let directory = config
+        .extension_dir
+        .context("尚未配置扩展目录；请先在 config.json 里设置 extension_dir")?;
+    let dir = Path::new(&directory);
+    let release = crate::extension::fetch_release(&source)?;
+    let installed = crate::extension::installed_version(dir);
+    if let Some(current) = installed.as_deref() {
+        if !update::compare(&release.version, current).is_gt() {
+            return Ok(format!(
+                "扩展已是 {current}（源上 {}），无需更新",
+                release.version
+            ));
+        }
+    }
+    let installed_dir = crate::extension::apply(&source, &release, dir)?;
+    Ok(format!(
+        "扩展已更新到 {}{}；在 chrome://extensions 里重载后生效（目录 {}）",
+        release.version,
+        match installed.as_deref() {
+            Some(previous) => format!("（原 {previous}）"),
+            None => String::new(),
+        },
+        installed_dir.display()
+    ))
 }
 
 /// Delegates the process-lifetime question to the same assessment the tray

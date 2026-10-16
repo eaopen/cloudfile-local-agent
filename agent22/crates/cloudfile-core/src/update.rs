@@ -112,7 +112,7 @@ pub fn signing_payload(release: &Release) -> Vec<u8> {
     payload.into_bytes()
 }
 
-fn valid_version(value: &str) -> bool {
+pub(crate) fn valid_version(value: &str) -> bool {
     if value.is_empty() || value.len() > 32 {
         return false;
     }
@@ -179,7 +179,7 @@ pub fn valid_sha256(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn same_origin(source: &str, url: &str) -> bool {
+pub(crate) fn same_origin(source: &str, url: &str) -> bool {
     let (Ok(source), Ok(url)) = (url::Url::parse(source), url::Url::parse(url)) else {
         return false;
     };

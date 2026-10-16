@@ -29,6 +29,7 @@ Usage: cloudfile-native-host [command]
   --check-update                 report the available signed release, if any
   --update                       download, verify, stage and activate an update
   --update-from <manifest>       run an update from a local signed manifest
+  --update-extension             install the newest browser extension and let it reload
   --rollback                     point the host back at the previous version
   --prune                        keep the active version plus one revert point
 
@@ -179,6 +180,19 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
             );
         }
         "--update" => run_update(&root, &host, None)?,
+        "--update-extension" => {
+            native::record_update_result(&root, "extension", "running");
+            match native::update_extension(&root) {
+                Ok(message) => {
+                    native::record_update_result(&root, "extension", "completed");
+                    println!("{message}");
+                }
+                Err(error) => {
+                    native::record_update_result(&root, "extension", "failed");
+                    return Err(error);
+                }
+            }
+        }
         "--update-from" => {
             let path = flag(args, "--update-from")
                 .ok_or_else(|| anyhow::anyhow!("--update-from requires a manifest path"))?;
@@ -321,9 +335,9 @@ fn run_stdio() -> anyhow::Result<()> {
             Ok(wire::Request::Status {}) => native::status(&root),
             Ok(wire::Request::Tasks {}) => native::task_summary(&root),
             Ok(wire::Request::CheckUpdate {}) => native::check_update(&root),
-            Ok(wire::Request::Update {}) => start_detached("--update", &root),
+            Ok(wire::Request::Update {}) => start_detached("--update", &root, "agent"),
             Ok(wire::Request::UpdateExtension {}) => {
-                wire::error("扩展更新尚未实现；请在扩展管理页手动重新加载开发副本")
+                start_detached("--update-extension", &root, "extension")
             }
             Ok(wire::Request::QueryLocalFile {
                 repo_id,
@@ -386,9 +400,15 @@ fn forward(root: &Path, request: wire::Request) -> Value {
 
 /// Upgrades must outlive this process: Chrome terminates the host as soon as
 /// the response is written.
-fn start_detached(argument: &str, root: &Path) -> Value {
-    if update_configured(root).is_none() {
-        return wire::error("尚未配置签名更新源，无法从浏览器更新 Agent");
+/// 把升级交给一个脱离宿主的自己。`kind` 决定需要什么配置：
+/// Agent 自身升级要「源 + 公钥」二者齐备（否则无法验签），扩展升级只要源
+/// （信任锚是同源 https + sha256），缺什么就在这里如实拒绝，别让扩展点了没反应。
+fn start_detached(argument: &str, root: &Path, kind: &str) -> Value {
+    if update_configured(root, kind).is_none() {
+        return match kind {
+            "extension" => wire::error("尚未配置更新源，无法更新扩展"),
+            _ => wire::error("尚未配置签名更新源，无法从浏览器更新 Agent"),
+        };
     }
     let Ok(exe) = std::env::current_exe() else {
         return wire::error("无法定位 Agent 程序");
@@ -408,20 +428,22 @@ fn start_detached(argument: &str, root: &Path) -> Value {
     }
     match command.spawn() {
         Ok(_) => {
-            native::record_update_result(root, "agent", "running");
-            json!({"ok":true,"state":"running","last_update_state":"running","last_update_kind":"agent"})
+            native::record_update_result(root, kind, "running");
+            json!({"ok":true,"state":"running","last_update_state":"running","last_update_kind":kind})
         }
         Err(_) => {
-            native::record_update_result(root, "agent", "failed");
+            native::record_update_result(root, kind, "failed");
             json!({"ok":false,"error":"无法启动更新进程；当前版本保持不变"})
         }
     }
 }
 
-fn update_configured(root: &Path) -> Option<()> {
+fn update_configured(root: &Path, kind: &str) -> Option<()> {
     let config = session::config(root).ok()?;
-    match (config.update_source, config.update_public_key) {
-        (Some(_), Some(_)) => Some(()),
-        _ => None,
+    let source = config.update_source?;
+    if kind == "extension" {
+        // 扩展升级不需要签名公钥，但它需要一个能解析出 archive 的相对源。
+        return update::valid_source(&source).then_some(());
     }
+    config.update_public_key.map(|_| ())
 }

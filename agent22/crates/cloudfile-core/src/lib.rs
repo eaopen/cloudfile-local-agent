@@ -35,5 +35,7 @@ pub mod auto_upload;
 pub mod cdc;
 pub mod device;
 pub mod exclusive;
+/// 浏览器扩展的自更新（下载 + 校验 + 原子替换目录）。
+pub mod extension;
 pub mod paired_session;
 pub mod upload;

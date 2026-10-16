@@ -125,6 +125,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 - `cloudfile-core` 的三个 Windows 底层保障模块：`winreg`（进程内读写注册表）、`childproc`（子进程不弹控制台窗口）、`shortcut`（「启动」文件夹里的 `.lnk`）。注册、登录项、WebView2 探测、应用探测**一律走它们**，不再 spawn `reg.exe`——否则父进程是 GUI（Tauri 桌面）时每次调用都会闪一个黑窗口，而且在禁用 `reg.exe` 的机器上会直接失败而不是降级。只有「打开文档的应用」与「必须脱离宿主存活的升级进程」例外，前者需要窗口、后者用 `DETACHED_PROCESS` 自带无控制台。
 - Windows 的登录项有**两条途径**，装的时候依次尝试：先写当前用户的 `Run` 键，被组策略或安全软件锁住时（企业机器上常见）退到「启动」文件夹里的 `CloudFileAgent22.lnk`。两条都用 `IShellLinkW`/`IPersistFile` 由 shell 自己维护格式，不手写二进制。`--status` 与设置界面会报出实际生效的是哪一条（`run-key` / `startup-folder`），因为这两种情况在任务管理器里长得完全不一样。两条途径都带上 `--autostart`：登录启动必须进托盘而不是抢焦点。
 - `cloudfile-native-host`：有界 stdio 消息、本机请求转交，以及安装/升级/回退用的命令行。
+- 浏览器扩展的自更新（`extension` 模块）：与 Agent 清单**同级、同一个源**的 `extension-update.json`（`version` / `zip_url` / `sha256` / `notes`），下载后校验 sha256、解包到临时目录、核对包内 `manifest.json` 的版本与清单一致，再整体改名换过去。归档按不可信输入处理：绝对路径、`..`、反斜杠（Windows 上的 zip slip）、符号链接、非普通文件、超过 256 MiB 一律拒绝，且只写新建文件。替换前上一版会改名到 `<dir>.prior`，换不过去就放回原位；`<dir>.prior` 已存在时拒绝动作，等人工看一眼。装完由扩展自己 `chrome.runtime.reload()` 生效——Chrome 不允许外部进程替换已加载的扩展，所以这一步结束时是「文件已就位」，不是「已生效」。
 - `cloudfile-desktop`：唯一任务执行进程与轻量静态界面（`ui/` 下四组静态资源：任务中心、悬浮入口、轻提示、样式），无 Node 运行时。
 
 本机 IPC 使用用户数据目录下的短期文件邮箱及进程锁，无 localhost 服务。
@@ -136,7 +137,8 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（108 项，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（`cloudfile-core` + `cloudfile-native-host` 共 **118 项**在本机 Windows 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`；`cloudfile-desktop` 的 `cli_contract` 由 CI 在 macOS/Windows 上跑）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+扩展自更新的**文件侧**另用开发通道里真实发布的包实测过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、包内版本与清单核对、重复安装幂等）。
 Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` 的注册表步骤、`cli_contract` 的注册与接管）**不再依赖 `reg.exe`**：注册表是进程内读写的，所以这些用例在禁用 `reg.exe` 的环境里也能跑、也会绿。
 其中 `cloudfile-native-host/tests/cli_contract.rs` 与 `cloudfile-desktop/tests/cli_contract.rs` 直接运行真实二进制，并把 `HOME`（Windows 另加 `LOCALAPPDATA`）重定向到临时目录，因此注册、接管、回退、卸载、健康检查与协议自检都不触碰开发机上的真实 Chrome 注册。
 
@@ -144,8 +146,8 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 
 - **Windows 实机**。注册表读写、WebView2 探测与登录项的两条途径（`Run` 键写入 → 读回 → 撤销，「启动」文件夹 `.lnk` 写入 → 读回 → 撤销，含 shell 路径与文档化公式一致）已在 Windows 11 上实测；**Tauri 窗口与托盘行为、应用探测的真机回归仍未做**。
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
-- **Chrome 扩展联动**。`--status` / `capabilities` 的字段已对齐，但没有在真实 Chrome 里跑过完整链路。
-- **扩展自身的更新**。浏览器的 `update_extension` 请求目前返回明确的“未实现”，不会假装成功；扩展需要手动重新加载开发副本。
+- **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
+- **扩展自身的更新（下载侧）**。Rust 侧的更新源要求是**规范 https origin**（`https://host/dir`，清单固定叫 `cloudfile-agent2-update.json`），而现有开发通道是 `http://10.9.8.162:6111/cloudfile-updates-dev/update.json`——明文 http、且清单名与 Rust 的约定不同。也就是说**当前开发通道对 Rust Agent 的两种更新都用不上**，需要通道侧提供 https 或为 Rust 另发一份清单。
 - **无感原位升级（B 类）**。不迁移旧设备身份与原任务，首次切换需重新配对。
 - **Code signing / 公证 / 运行时安装器**。当前 ZIP 是开发包。
 
