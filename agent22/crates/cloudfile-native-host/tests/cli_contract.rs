@@ -433,6 +433,58 @@ fn the_self_test_reports_every_check_and_exits_non_zero_when_something_is_broken
 }
 
 #[test]
+fn a_plain_http_channel_needs_the_explicit_dev_flag() {
+    let sandbox = Sandbox::new();
+    // 不放行：明文源被拒绝，而且配置里什么都不会留下。
+    let refusal = sandbox.refuses(&[
+        "--set-update-source",
+        "http://10.9.8.162:6111/cloudfile-updates-dev",
+    ]);
+    assert!(refusal.contains("https"), "{refusal}");
+    assert_eq!(
+        sandbox.run_json(&["--check-update"])["update_source_set"],
+        false
+    );
+
+    // 显式放行：写进去，并且「允许明文」这件事本身要能被读出来（审计要看的就是它）。
+    // 用 127.0.0.1:1 而不是真实局域网地址：这条用例不该依赖网络，而且它必然立刻失败。
+    let saved = sandbox.run_json(&[
+        "--set-update-source",
+        "http://127.0.0.1:1/dev",
+        "--allow-insecure-source",
+    ]);
+    assert_eq!(saved["allow_insecure_update_source"], true);
+    assert_eq!(saved["update_source"], "http://127.0.0.1:1/dev");
+    // 开发通道允许「有源没公钥」：那种通道只服务扩展更新。
+    assert_eq!(saved["update_public_key_set"], false);
+    // 也不接受「随便写的源」：放行的是 scheme，不是格式。
+    assert!(sandbox
+        .refuses(&[
+            "--set-update-source",
+            "http://127.0.0.1:1/dev/",
+            "--allow-insecure-source"
+        ])
+        .contains("origin"));
+
+    let check = sandbox.run_json(&["--check-update"]);
+    assert_eq!(check["update_source_set"], true);
+    assert_eq!(check["update_source_insecure_allowed"], true);
+    // 没有签名公钥时 Agent 自身的检查**根本不会发起**（所以连 update_error 都没有），
+    // 扩展那一节试过但源不可达 —— 两者都不影响「源配好了」这件事。
+    assert!(check.get("update_error").is_none(), "{check}");
+    assert!(check.get("extension_latest_version").is_none(), "{check}");
+    assert_eq!(check["update_available"], false);
+
+    // 清空：入口没了，开关也一并归零。
+    sandbox.run(&["--clear-update-source"]);
+    let check = sandbox.run_json(&["--check-update"]);
+    assert_eq!(check["update_source_set"], false);
+    assert_eq!(check["update_source_insecure_allowed"], false);
+
+    sandbox.cleanup();
+}
+
+#[test]
 fn updates_are_refused_until_a_signed_channel_is_configured() {
     let sandbox = Sandbox::new();
     // No pinned key and no source: the agent must not even attempt a download.

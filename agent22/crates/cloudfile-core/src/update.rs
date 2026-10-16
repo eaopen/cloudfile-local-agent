@@ -179,24 +179,62 @@ pub fn valid_sha256(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-pub(crate) fn same_origin(source: &str, url: &str) -> bool {
-    let (Ok(source), Ok(url)) = (url::Url::parse(source), url::Url::parse(url)) else {
-        return false;
-    };
-    source.scheme() == "https"
-        && url.scheme() == "https"
-        && source.origin() == url.origin()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.fragment().is_none()
+/// 更新源的信任策略。
+///
+/// 正式通道只认**规范 https origin**（`https://host/dir`：不带尾斜杠、不带用户信息、
+/// 不带 fragment）。更新包是按这个 origin 解析并下载的，所以「源写成什么样」和
+/// 「允许下载到哪」必须是同一条规则，不能靠调用方各自解释。
+///
+/// 开发通道是局域网上的**明文 http**（例如 `http://10.9.8.162:6111/cloudfile-updates-dev`）。
+/// 它必须被**显式**打开：`allow_insecure` 只能来自 config.json 的
+/// `allow_insecure_update_source` 或命令行的 `--allow-insecure-source`，
+/// **绝不会因为源本身写成 http 就自动放行**。打开时也只放宽 scheme 一项 ——
+/// 规范 origin、同源、sha256、签名校验一条都不放松。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourcePolicy {
+    /// 允许明文 http 源（仅开发通道；正式通道永远是 https）。
+    pub allow_insecure: bool,
 }
 
-/// The update source itself must be a canonical https origin.
+impl SourcePolicy {
+    /// 正式通道：只认 https。
+    pub const STRICT: SourcePolicy = SourcePolicy {
+        allow_insecure: false,
+    };
+    /// 开发通道：额外允许明文 http，其余规则不变。
+    pub const DEV: SourcePolicy = SourcePolicy {
+        allow_insecure: true,
+    };
+
+    fn permits(self, scheme: &str) -> bool {
+        scheme == "https" || (self.allow_insecure && scheme == "http")
+    }
+
+    /// 源与目标是否同一个 origin（并且是允许的 scheme）。
+    pub fn same_origin(self, source: &str, url: &str) -> bool {
+        let (Ok(source), Ok(url)) = (url::Url::parse(source), url::Url::parse(url)) else {
+            return false;
+        };
+        self.permits(source.scheme())
+            && self.permits(url.scheme())
+            && source.origin() == url.origin()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    }
+
+    /// 更新源本身必须是规范 origin（严格到「重新序列化后一字不差」）。
+    pub fn valid_source(self, source: &str) -> bool {
+        url::Url::parse(source)
+            .map(|url| url.as_str().trim_end_matches('/') == source)
+            .unwrap_or(false)
+            && self.same_origin(source, source)
+    }
+}
+
+/// 正式通道下的源校验（等价于 [`SourcePolicy::STRICT`]）。
 pub fn valid_source(source: &str) -> bool {
-    url::Url::parse(source)
-        .map(|url| url.as_str().trim_end_matches('/') == source)
-        .unwrap_or(false)
-        && same_origin(source, source)
+    SourcePolicy::STRICT.valid_source(source)
 }
 
 /// Decodes the pinned public key: base64url of the 65-byte uncompressed point.
@@ -213,6 +251,7 @@ pub fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
 
 /// Full verification. Nothing is downloaded before every field below passes.
 pub fn verify(
+    policy: SourcePolicy,
     release: &Release,
     source: &str,
     current_version: &str,
@@ -235,8 +274,15 @@ pub fn verify(
     if release.ipc_version != IPC_VERSION || release.journal_version != JOURNAL_VERSION {
         bail!("release speaks an incompatible protocol version");
     }
-    if !valid_source(source) {
-        bail!("update source must be a canonical https origin");
+    if !policy.valid_source(source) {
+        bail!(
+            "update source must be a canonical {} origin",
+            if policy.allow_insecure {
+                "https or http"
+            } else {
+                "https"
+            }
+        );
     }
     let mut seen = std::collections::BTreeSet::new();
     for artifact in &release.artifacts {
@@ -247,7 +293,7 @@ pub fn verify(
         if !valid_sha256(&artifact.sha256) {
             bail!("release artifact is missing a usable digest");
         }
-        if !same_origin(source, &artifact.url) {
+        if !policy.same_origin(source, &artifact.url) {
             bail!("release artifact does not come from the update source");
         }
     }
@@ -274,8 +320,20 @@ pub fn parse_release(bytes: &[u8]) -> Result<Release> {
 /// Fixed name under the update origin. No redirects: a re-pointed manifest
 /// would move the trust anchor away from the pinned key.
 pub fn fetch_manifest(source: &str) -> Result<Vec<u8>> {
-    if !valid_source(source) {
-        bail!("update source must be a canonical https origin");
+    fetch_manifest_for(SourcePolicy::STRICT, source)
+}
+
+/// 同上，但按给定策略判定 scheme（开发通道放行明文 http）。
+pub fn fetch_manifest_for(policy: SourcePolicy, source: &str) -> Result<Vec<u8>> {
+    if !policy.valid_source(source) {
+        bail!(
+            "update source must be a canonical {} origin",
+            if policy.allow_insecure {
+                "https or http"
+            } else {
+                "https"
+            }
+        );
     }
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -528,6 +586,40 @@ mod tests {
     use super::*;
     use p256::ecdsa::{signature::Signer, SigningKey};
 
+    #[test]
+    fn the_source_policy_only_widens_the_scheme_and_nothing_else() {
+        // 正式通道：明文一律不认。
+        assert!(!SourcePolicy::STRICT.valid_source("http://10.9.8.162:6111/channel"));
+        assert!(SourcePolicy::STRICT.valid_source("https://updates.example.com/channel"));
+        // 开发通道：额外认 http，其余规则一条都不放松。
+        assert!(SourcePolicy::DEV.valid_source("http://10.9.8.162:6111/channel"));
+        assert!(SourcePolicy::DEV.valid_source("https://updates.example.com/channel"));
+        for bad in [
+            "http://10.9.8.162:6111/channel/",     // 尾斜杠 = 不是规范 origin
+            "http://user@10.9.8.162:6111/channel", // 带用户信息
+            "http://10.9.8.162:6111/channel#frag", // 带 fragment
+            "ftp://10.9.8.162:6111/channel",       // 别的 scheme
+            "10.9.8.162:6111/channel",             // 没有 scheme
+        ] {
+            assert!(!SourcePolicy::DEV.valid_source(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_source_policy_never_allows_a_scheme_downgrade() {
+        let source = "https://updates.example.com/channel";
+        assert!(SourcePolicy::DEV.same_origin(source, "https://updates.example.com/channel/x.zip"));
+        // 源是 https 时，包不能走明文 —— 放行明文是指「源本来就在明文通道上」，
+        // 不是「允许把 https 通道里的下载降级」。
+        assert!(!SourcePolicy::DEV.same_origin(source, "http://updates.example.com/channel/x.zip"));
+        // 反过来（源是 http）也不行：混用说明清单被改过。
+        let insecure = "http://10.9.8.162:6111/channel";
+        assert!(SourcePolicy::DEV.same_origin(insecure, "http://10.9.8.162:6111/channel/x.zip"));
+        assert!(!SourcePolicy::DEV.same_origin(insecure, "https://10.9.8.162:6111/channel/x.zip"));
+        // 换主机永远不行。
+        assert!(!SourcePolicy::DEV.same_origin(insecure, "http://evil.example.com/x.zip"));
+    }
+
     fn key() -> (SigningKey, String) {
         let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
         let point = key.verifying_key().to_encoded_point(false);
@@ -577,6 +669,7 @@ mod tests {
         let (key, pinned) = key();
         let release = signed(&key, release("2.2.1"));
         verify(
+            SourcePolicy::STRICT,
             &release,
             "https://updates.example.com",
             "2.2.0",
@@ -593,6 +686,7 @@ mod tests {
         let base = signed(&key, release("2.2.1"));
         let check = |candidate: Release| {
             verify(
+                SourcePolicy::STRICT,
                 &candidate,
                 "https://updates.example.com",
                 "2.2.0",

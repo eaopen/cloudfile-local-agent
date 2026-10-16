@@ -38,22 +38,34 @@ pub struct Release {
     pub notes: String,
 }
 
-/// 扩展清单的地址：更新源同级、固定文件名。
-pub fn manifest_url(agent_source: &str) -> Result<String> {
-    if !update::valid_source(agent_source) {
-        bail!("update source must be a canonical https origin");
+/// 扩展清单的地址：更新源同级、固定文件名。`policy` 与 Agent 自身升级共用同一套
+/// 判定（正式通道 https，开发通道可显式放行明文 http）。
+pub fn manifest_url(policy: update::SourcePolicy, agent_source: &str) -> Result<String> {
+    if !policy.valid_source(agent_source) {
+        bail!(
+            "update source must be a canonical {} origin",
+            if policy.allow_insecure {
+                "https or http"
+            } else {
+                "https"
+            }
+        );
     }
     Ok(format!("{agent_source}/{MANIFEST_FILE}"))
 }
 
 /// 解包归档的地址。`zip_url` 是相对清单解析的（通道里就是裸文件名），
 /// 解析结果必须与更新源**同源**，否则一个被改过的清单就能把下载指到别处。
-pub fn archive_url(agent_source: &str, zip_url: &str) -> Result<String> {
-    let base = url::Url::parse(&manifest_url(agent_source)?)?;
+pub fn archive_url(
+    policy: update::SourcePolicy,
+    agent_source: &str,
+    zip_url: &str,
+) -> Result<String> {
+    let base = url::Url::parse(&manifest_url(policy, agent_source)?)?;
     let target = base
         .join(zip_url)
         .context("extension archive url is not a valid url")?;
-    if !update::same_origin(agent_source, target.as_str()) {
+    if !policy.same_origin(agent_source, target.as_str()) {
         bail!("extension archive must live on the update source");
     }
     Ok(target.to_string())
@@ -80,8 +92,8 @@ fn validate(release: &Release) -> Result<()> {
 }
 
 /// 取扩展清单。与 Agent 清单一样不跟随重定向：重定向会把信任锚带走。
-pub fn fetch_release(agent_source: &str) -> Result<Release> {
-    let url = manifest_url(agent_source)?;
+pub fn fetch_release(policy: update::SourcePolicy, agent_source: &str) -> Result<Release> {
+    let url = manifest_url(policy, agent_source)?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(20))
@@ -120,13 +132,18 @@ pub fn backup_path(dir: &Path) -> PathBuf {
 }
 
 /// 下载、校验、解包并原子替换。返回安装后的目录。
-pub fn apply(agent_source: &str, release: &Release, dir: &Path) -> Result<PathBuf> {
+pub fn apply(
+    policy: update::SourcePolicy,
+    agent_source: &str,
+    release: &Release,
+    dir: &Path,
+) -> Result<PathBuf> {
     // 先把清单与目标检查完，再动网络：坏参数不该换来一次下载。
     validate(release)?;
     if dir.as_os_str().is_empty() || !dir.is_absolute() {
         bail!("extension directory must be an absolute path");
     }
-    let url = archive_url(agent_source, &release.zip_url)?;
+    let url = archive_url(policy, agent_source, &release.zip_url)?;
     let archive = update::download(&update::Artifact {
         kind: "extension".to_string(),
         url,
@@ -294,30 +311,88 @@ mod tests {
     #[test]
     fn the_manifest_sits_next_to_the_agent_manifest() {
         assert_eq!(
-            manifest_url(SOURCE).unwrap(),
+            manifest_url(update::SourcePolicy::STRICT, SOURCE).unwrap(),
             "https://updates.example.com/channel/extension-update.json"
         );
         // 源必须是规范 https origin（与 Agent 清单同一把尺子）。
-        assert!(manifest_url("http://updates.example.com/channel").is_err());
-        assert!(manifest_url("https://updates.example.com/channel/").is_err());
-        assert!(manifest_url("https://user@updates.example.com").is_err());
+        assert!(manifest_url(
+            update::SourcePolicy::STRICT,
+            "http://updates.example.com/channel"
+        )
+        .is_err());
+        assert!(manifest_url(
+            update::SourcePolicy::STRICT,
+            "https://updates.example.com/channel/"
+        )
+        .is_err());
+        assert!(manifest_url(
+            update::SourcePolicy::STRICT,
+            "https://user@updates.example.com"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn the_dev_policy_makes_the_plain_http_channel_usable_without_widening_anything_else() {
+        // 就是开发通道的真实地址（明文 http + 通道目录）。
+        const DEV_SOURCE: &str = "http://10.9.8.162:6111/cloudfile-updates-dev";
+        // 没显式放行时，这个源不可用（默认不放宽）。
+        assert!(manifest_url(update::SourcePolicy::STRICT, DEV_SOURCE).is_err());
+        assert_eq!(
+            manifest_url(update::SourcePolicy::DEV, DEV_SOURCE).unwrap(),
+            "http://10.9.8.162:6111/cloudfile-updates-dev/extension-update.json"
+        );
+        // 包仍然按同源解析，跨源/跨 scheme 照样拒绝。
+        assert_eq!(
+            archive_url(update::SourcePolicy::DEV, DEV_SOURCE, "receiver.zip").unwrap(),
+            "http://10.9.8.162:6111/cloudfile-updates-dev/receiver.zip"
+        );
+        assert!(archive_url(
+            update::SourcePolicy::DEV,
+            DEV_SOURCE,
+            "https://updates.example.com/receiver.zip"
+        )
+        .is_err());
+        assert!(archive_url(
+            update::SourcePolicy::DEV,
+            DEV_SOURCE,
+            "http://10.9.8.199:6111/receiver.zip"
+        )
+        .is_err());
+        // 放行 scheme 不等于放行「随便写的源」。
+        assert!(manifest_url(update::SourcePolicy::DEV, "http://10.9.8.162:6111/dev/").is_err());
     }
 
     #[test]
     fn the_archive_is_resolved_relative_to_the_manifest_and_stays_on_source() {
         // 通道里的写法：裸文件名。
         assert_eq!(
-            archive_url(SOURCE, "cloudfile-local-session-receiver-1.0.4-dev.zip").unwrap(),
+            archive_url(
+                update::SourcePolicy::STRICT,
+                SOURCE,
+                "cloudfile-local-session-receiver-1.0.4-dev.zip"
+            )
+            .unwrap(),
             "https://updates.example.com/channel/cloudfile-local-session-receiver-1.0.4-dev.zip"
         );
         // Go 侧的 ./ 写法。
         assert_eq!(
-            archive_url(SOURCE, "./receiver.zip").unwrap(),
+            archive_url(update::SourcePolicy::STRICT, SOURCE, "./receiver.zip").unwrap(),
             "https://updates.example.com/channel/receiver.zip"
         );
         // 换源 = 拒绝：清单被改过时不能把下载指到别处。
-        assert!(archive_url(SOURCE, "https://evil.example.com/receiver.zip").is_err());
-        assert!(archive_url(SOURCE, "http://updates.example.com/receiver.zip").is_err());
+        assert!(archive_url(
+            update::SourcePolicy::STRICT,
+            SOURCE,
+            "https://evil.example.com/receiver.zip"
+        )
+        .is_err());
+        assert!(archive_url(
+            update::SourcePolicy::STRICT,
+            SOURCE,
+            "http://updates.example.com/receiver.zip"
+        )
+        .is_err());
     }
 
     #[test]
@@ -456,7 +531,13 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let mut release = release("1.0.4", &"2".repeat(64));
         release.zip_url = "https://evil.example.com/receiver.zip".to_string();
-        let error = apply(SOURCE, &release, &base.path().join("extension")).unwrap_err();
+        let error = apply(
+            update::SourcePolicy::STRICT,
+            SOURCE,
+            &release,
+            &base.path().join("extension"),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("update source"), "{error}");
     }
 }

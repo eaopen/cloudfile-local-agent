@@ -89,6 +89,8 @@ pub fn status(root: &Path) -> Value {
     let probe = check_update(root);
     for key in [
         "update_source_set",
+        // 让 --status 也能看到「这台机器允许明文更新源」——审计第一眼要看的就是它。
+        "update_source_insecure_allowed",
         "update_available",
         "latest_version",
         "latest_notes",
@@ -322,7 +324,14 @@ pub fn load_update_result(root: &Path) -> Option<Value> {
 /// extension only uses the answer to show an update hint.
 pub fn check_update(root: &Path) -> Value {
     let config = session::config(root).unwrap_or_default();
-    let mut value = json!({"update_source_set": false, "update_available": false});
+    let policy = config.update_policy();
+    // 「这台机器允许明文更新源」是一个机器级事实：没配源时也要报出来，
+    // 否则审计只能靠读 config.json 才知道有人开过这个口子。
+    let mut value = json!({
+        "update_source_set": false,
+        "update_available": false,
+        "update_source_insecure_allowed": policy.allow_insecure,
+    });
     let Some(source) = config.update_source.clone() else {
         return value;
     };
@@ -333,16 +342,17 @@ pub fn check_update(root: &Path) -> Value {
     // 扩展清单与 Agent 清单同级、同一个源，而且**不需要签名**（信任锚是同源 https
     // + sha256）：扩展不是可执行文件，装错版本不会在用户机器上执行代码。所以这一节
     // 只看更新源，公钥缺失不该让扩展升级变成「不可用」。
-    describe_extension_update(&source, &mut value);
+    describe_extension_update(policy, &source, &mut value);
 
     let Some(public_key) = config.update_public_key.clone() else {
         return value;
     };
-    match update::fetch_manifest(&source) {
+    match update::fetch_manifest_for(policy, &source) {
         Ok(bytes) => match update::parse_release(&bytes) {
             Ok(release) => {
                 let platform = update::platform_id(std::env::consts::OS, std::env::consts::ARCH);
                 match update::verify(
+                    policy,
                     &release,
                     &source,
                     crate::VERSION,
@@ -368,8 +378,8 @@ pub fn check_update(root: &Path) -> Value {
 /// 扩展一侧的版本信息。扩展等的是
 /// `extension_latest_version == extension_installed_version`，两个都给不出来它就无法
 /// 自己重载；取不到清单只是没提示，不是错误。
-fn describe_extension_update(source: &str, value: &mut Value) {
-    let Ok(release) = crate::extension::fetch_release(source) else {
+fn describe_extension_update(policy: update::SourcePolicy, source: &str, value: &mut Value) {
+    let Ok(release) = crate::extension::fetch_release(policy, source) else {
         return;
     };
     value["extension_latest_version"] = json!(release.version);
@@ -388,6 +398,8 @@ fn describe_extension_update(source: &str, value: &mut Value) {
 /// 所以这里结束在「文件已就位」，与 Go 侧 `--update-extension` 一致。
 pub fn update_extension(root: &Path) -> Result<String> {
     let config = session::config(root)?;
+    // 先算策略：下面两个 `.context()` 会把 Option<String> 字段移走，之后再借 config 就晚了。
+    let policy = config.update_policy();
     let source = config
         .update_source
         .context("尚未配置更新源；请先在 config.json 里设置 update_source")?;
@@ -395,7 +407,7 @@ pub fn update_extension(root: &Path) -> Result<String> {
         .extension_dir
         .context("尚未配置扩展目录；请先在 config.json 里设置 extension_dir")?;
     let dir = Path::new(&directory);
-    let release = crate::extension::fetch_release(&source)?;
+    let release = crate::extension::fetch_release(policy, &source)?;
     let installed = crate::extension::installed_version(dir);
     if let Some(current) = installed.as_deref() {
         if !update::compare(&release.version, current).is_gt() {
@@ -405,7 +417,7 @@ pub fn update_extension(root: &Path) -> Result<String> {
             ));
         }
     }
-    let installed_dir = crate::extension::apply(&source, &release, dir)?;
+    let installed_dir = crate::extension::apply(policy, &source, &release, dir)?;
     Ok(format!(
         "扩展已更新到 {}{}；在 chrome://extensions 里重载后生效（目录 {}）",
         release.version,

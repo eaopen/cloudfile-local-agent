@@ -33,6 +33,8 @@ cloudfile-native-host --host-state                                       # 查�
 cloudfile-native-host --rollback-host                                    # 还原上一次被替换的注册
 cloudfile-native-host --unregister-host                                  # 只移除本 Agent 写入的注册
 cloudfile-native-host --enable-autostart / --disable-autostart           # 可选登录启动
+cloudfile-native-host --set-update-source https://host/dir --public-key <b64>  # 配置更新通道
+cloudfile-native-host --clear-update-source                              # 清空更新通道
 cloudfile-native-host --check-update                                     # 报告可用的已签名版本
 cloudfile-native-host --update                                           # 下载、校验、暂存、健康检查、切换
 cloudfile-native-host --update-extension                                 # 装最新扩展包，再由扩展自己重载
@@ -42,6 +44,13 @@ cloudfile-native-host --status                                            # 版�
 cloudfile-native-host --self-test                                        # 本机自检（JSON；有问题时退出码非 0）
 cloudfile-desktop --self-test                                            # 同一套检查，从桌面进程那一侧看
 ```
+
+更新通道的信任策略：
+
+- 正式通道要求**规范 https origin**（`https://host/dir`），且 Agent 自身的升级必须有钉住的签名公钥；包只能从同一 origin 下载，不跟随重定向。
+- 局域网开发通道是**明文 http**，必须用 `--allow-insecure-source`（或 config.json 的 `allow_insecure_update_source`）显式打开。它**只放宽 scheme 一项**：规范 origin、同源、sha256、签名、不跟随重定向一条都不放松，而且开关本身会被记进 config.json —— 升级时读回来的是「当初同意的那套规则」，不会出现「设置时宽松、升级时严格」。写成 http 的源**永远不会**被自动接受。
+- 开发通道允许「有源、没有签名公钥」：那种通道只服务**扩展更新**（扩展不签名，信任锚是同源 + sha256），此时 `--check-update` / `--status` 会明说「只有扩展更新可用，Agent 自身不可升级」。正式通道仍然要求两条都在。
+- 开没开这个口子是**可审计的**：`--status` / `--check-update` 用 `update_source_insecure_allowed` 报告它，`--self-test` 会写成「已显式放行明文 http」。
 
 规则：
 
@@ -141,8 +150,8 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（**130 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
-扩展自更新的**文件侧**另用开发通道里真实发布的包实测过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、包内版本与清单核对、重复安装幂等）。
+已覆盖：`cargo test --workspace --locked`（**137 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+扩展自更新**整条链路**已对着真实开发通道实测：`--set-update-source http://10.9.8.162:6111/cloudfile-updates-dev --allow-insecure-source` → `--update-extension` 从明文 http 下载真实发布的包（摘要与清单一致）、解出 10 个条目（含 `icons/` 子目录）、装成 1.0.4；`--self-test` 随后如实报出「已显式放行明文 http」与「1.0.4」，不带开关时同一命令被拒（`must be a canonical https origin`）。
 Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` 的注册表步骤、`cli_contract` 的注册与接管）**不再依赖 `reg.exe`**：注册表是进程内读写的，所以这些用例在禁用 `reg.exe` 的环境里也能跑、也会绿。
 其中 `cloudfile-native-host/tests/cli_contract.rs` 与 `cloudfile-desktop/tests/cli_contract.rs` 直接运行真实二进制，并把 `HOME`（Windows 另加 `LOCALAPPDATA`）重定向到临时目录，因此注册、接管、回退、卸载、健康检查与协议自检都不触碰开发机上的真实 Chrome 注册。
 
@@ -151,7 +160,7 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 - **Windows 实机**。注册表读写、WebView2 探测与登录项的两条途径（`Run` 键写入 → 读回 → 撤销，「启动」文件夹 `.lnk` 写入 → 读回 → 撤销，含 shell 路径与文档化公式一致）已在 Windows 11 上实测；**Tauri 窗口与托盘行为、应用探测的真机回归仍未做**。
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
 - **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
-- **扩展自身的更新（下载侧）**。Rust 侧的更新源要求是**规范 https origin**（`https://host/dir`，清单固定叫 `cloudfile-agent2-update.json`），而现有开发通道是 `http://10.9.8.162:6111/cloudfile-updates-dev/update.json`——明文 http、且清单名与 Rust 的约定不同。也就是说**当前开发通道对 Rust Agent 的两种更新都用不上**，需要通道侧提供 https 或为 Rust 另发一份清单。
+- **Rust Agent 自身的更新**。通道侧仍需提供符合 Rust 约定的清单：源要写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`。现有开发通道里的 `update.json` 是给 Go 侧用的，名字与位置都不同，所以 **Rust Agent 的自我升级还没法在开发通道上跑**（扩展更新不受影响，已经实测通过）。
 - **无感原位升级（B 类）**。不迁移旧设备身份与原任务，首次切换需重新配对。
 - **Code signing / 公证 / 运行时安装器**。当前 ZIP 是开发包。
 

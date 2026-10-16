@@ -33,6 +33,8 @@ Usage: cloudfile-native-host [command]
   --host-state                   print the current Chrome host registration
   --enable-autostart             start the agent at login
   --disable-autostart            stop starting the agent at login
+  --set-update-source <url>      configure the update channel (with --public-key)
+  --clear-update-source          remove the configured update channel
   --check-update                 report the available signed release, if any
   --self-test                    check the local installation and exit (JSON, non-zero when broken)
   --update                       download, verify, stage and activate an update
@@ -40,6 +42,12 @@ Usage: cloudfile-native-host [command]
   --update-extension             install the newest browser extension and let it reload
   --rollback                     point the host back at the previous version
   --prune                        keep the active version plus one revert point
+
+Update options:
+  --public-key <base64url>       pinned P-256 release key (required by https channels)
+  --extension-dir <path>         local unpacked extension copy, for --update-extension
+  --allow-insecure-source        allow a plain-http channel (development only; recorded
+                                 in config.json and never enabled implicitly)
 
 Registration options:
   --extension-id <id>            Chrome extension ID to allow (32 chars, a-p)
@@ -169,6 +177,40 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
                 }))?
             );
         }
+        "--set-update-source" => {
+            let source = flag(args, "--set-update-source")
+                .ok_or_else(|| anyhow::anyhow!("--set-update-source requires a url"))?;
+            let public_key = flag(args, "--public-key");
+            let extension_dir = flag(args, "--extension-dir");
+            // 明文 http 只能靠这个开关放行，而且它会被记进 config.json ——
+            // 以后每次升级读回来的是同一条规则，不会出现「设置时宽松、升级时严格」。
+            let policy = if args.iter().any(|value| value == "--allow-insecure-source") {
+                update::SourcePolicy::DEV
+            } else {
+                update::SourcePolicy::STRICT
+            };
+            session::set_update_with_policy(
+                &root,
+                Some(source),
+                public_key,
+                extension_dir,
+                policy,
+            )?;
+            let config = session::config(&root)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "update_source": config.update_source,
+                    "update_public_key_set": config.update_public_key.is_some(),
+                    "allow_insecure_update_source": config.allow_insecure_update_source,
+                    "extension_dir": config.extension_dir,
+                }))?
+            );
+        }
+        "--clear-update-source" => {
+            session::set_update(&root, None, None, None)?;
+            println!("update source cleared");
+        }
         "--enable-autostart" => {
             let binary = desktop_binary()?;
             // 说清落在哪条途径上：企业机器上 Run 键常被锁，实际生效的是
@@ -285,12 +327,14 @@ fn apply_update(root: &Path, host: &str, manifest: Option<PathBuf>) -> anyhow::R
             "尚未配置签名更新源；请提供 --update-from <manifest> 或先设置更新源与公钥"
         ),
     };
+    let policy = config.update_policy();
     let bytes = match &manifest {
         Some(path) => std::fs::read(path)?,
-        None => update::fetch_manifest(&source)?,
+        None => update::fetch_manifest_for(policy, &source)?,
     };
     let release = update::parse_release(&bytes)?;
     update::verify(
+        policy,
         &release,
         &source,
         cloudfile_core::VERSION,
@@ -455,10 +499,15 @@ fn start_detached(argument: &str, root: &Path, kind: &str) -> Value {
 
 fn update_configured(root: &Path, kind: &str) -> Option<()> {
     let config = session::config(root).ok()?;
+    // 先算策略：`update_source?` 会把该字段移走。
+    let policy = config.update_policy();
     let source = config.update_source?;
     if kind == "extension" {
-        // 扩展升级不需要签名公钥，但它需要一个能解析出 archive 的相对源。
-        return update::valid_source(&source).then_some(());
+        // 扩展升级不需要签名公钥，但它需要一个能解析出 archive 的相对源 ——
+        // scheme 的判定走这台机器上已记录的策略（正式通道 https，开发通道也许放行了 http）。
+        return policy.valid_source(&source).then_some(());
     }
-    config.update_public_key.map(|_| ())
+    // Agent 自身升级要公钥（验签用），扩展不需要。
+    config.update_public_key.as_ref()?;
+    policy.valid_source(&source).then_some(())
 }

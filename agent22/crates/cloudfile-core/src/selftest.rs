@@ -222,28 +222,46 @@ fn login_item() -> Check {
     }
 }
 
-/// 更新源配没配。**只报事实**：Rust 侧要求规范 https origin，
-/// 配了明文 http 的话这里会明说「不可用」，免得等真的去升级才发现。
+/// 更新源配没配、够不够用。**只报事实**（内容对不对由 `--check-update` 回答）：
+/// 正式通道要规范 https origin，明文 http 必须由配置显式放行；放行了就说明白，
+/// 没放行也说明白「为什么不可用」，免得等真的去升级才发现。
 fn update_state(root: &Path) -> Check {
     let config = session::config(root).unwrap_or_default();
+    let policy = config.update_policy();
     let Some(source) = config.update_source else {
-        return Check::report("update-source", "未配置");
+        // 半配置状态也要说：开关开着但没有源，等于给自己留了一个没用的口子。
+        return Check::report(
+            "update-source",
+            if policy.allow_insecure {
+                "未配置（但允许明文源的开关是开着的）"
+            } else {
+                "未配置"
+            },
+        );
     };
-    if !update::valid_source(&source) {
+    if !policy.valid_source(&source) {
         return Check::fail(
             "update-source",
-            format!("{source} 不是规范 https origin（形如 https://host/dir），更新不可用"),
+            format!(
+                "{source} 不是规范 https origin（形如 https://host/dir），更新不可用；\
+                 开发通道请在 config.json 里把 allow_insecure_update_source 设为 true"
+            ),
         );
     }
     let signed = config.update_public_key.is_some();
     Check::report(
         "update-source",
         format!(
-            "{source}（{}）",
+            "{source}（{}{}）",
             if signed {
                 "Agent 与扩展更新均可用"
             } else {
                 "只有扩展更新可用：缺少签名公钥，Agent 自身不可升级"
+            },
+            if policy.allow_insecure {
+                "；已显式放行明文 http"
+            } else {
+                ""
             }
         ),
     )
@@ -339,6 +357,7 @@ mod tests {
             update_source: Some("http://10.9.8.162:6111/cloudfile-updates-dev/update.json".into()),
             update_public_key: None,
             extension_dir: None,
+            allow_insecure_update_source: false,
         };
         storage::write(&root.join("config.json"), &config).unwrap();
 
@@ -363,6 +382,7 @@ mod tests {
             update_source: Some("https://updates.example.com/channel".into()),
             update_public_key: None,
             extension_dir: None,
+            allow_insecure_update_source: false,
         };
         storage::write(&root.join("config.json"), &config).unwrap();
 
@@ -372,6 +392,39 @@ mod tests {
         let detail = check["detail"].as_str().unwrap();
         assert!(detail.contains("扩展"), "{detail}");
         assert!(detail.contains("签名公钥"), "{detail}");
+    }
+
+    #[test]
+    fn the_dev_switch_turns_a_plain_http_source_into_a_reportable_fact() {
+        let (_dir, root) = storage::test_root();
+        let host = root.join("host");
+        std::fs::write(&host, b"stub").unwrap();
+        let config = session::Config {
+            update_source: Some("http://10.9.8.162:6111/cloudfile-updates-dev".into()),
+            allow_insecure_update_source: true,
+            ..session::Config::default()
+        };
+        storage::write(&root.join("config.json"), &config).unwrap();
+
+        let report = run(&root, &host);
+        let check = find(&report, "update-source");
+        assert!(check["ok"].as_bool().unwrap(), "{check}");
+        let detail = check["detail"].as_str().unwrap();
+        // 放行了就要**说出来**：审计第一眼要看的是「这台机器允许明文更新」。
+        assert!(detail.contains("已显式放行明文 http"), "{detail}");
+        assert!(detail.contains("签名公钥"), "{detail}");
+
+        // 开关开着但没有源：也要报出来（半配置状态）。
+        let config = session::Config {
+            allow_insecure_update_source: true,
+            ..session::Config::default()
+        };
+        storage::write(&root.join("config.json"), &config).unwrap();
+        let report = run(&root, &host);
+        assert!(find(&report, "update-source")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("开关是开着的"));
     }
 
     #[test]
@@ -387,6 +440,7 @@ mod tests {
             update_source: None,
             update_public_key: None,
             extension_dir: Some(extension_dir.to_string_lossy().into_owned()),
+            allow_insecure_update_source: false,
         };
         storage::write(&root.join("config.json"), &config).unwrap();
         assert!(!find(&run(&root, &host), "extension")["ok"]

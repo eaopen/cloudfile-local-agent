@@ -25,6 +25,22 @@ pub struct Config {
     /// Local unpacked extension copy, used only to report its version.
     #[serde(default)]
     pub extension_dir: Option<String>,
+    /// 开发通道开关：允许**明文 http** 更新源（局域网测试通道）。
+    ///
+    /// 默认关闭，而且只能显式打开（config.json 里手写，或安装/配置命令行的
+    /// `--allow-insecure-source`）。写成 http 的源**不会**自动被接受 ——
+    /// 这台机器上「允许明文更新」必须是一句人写下来的话，不是一个巧合。
+    #[serde(default)]
+    pub allow_insecure_update_source: bool,
+}
+
+impl Config {
+    /// 这台机器上更新源的信任策略。只有配置里显式打开才放行明文 http。
+    pub fn update_policy(&self) -> crate::update::SourcePolicy {
+        crate::update::SourcePolicy {
+            allow_insecure: self.allow_insecure_update_source,
+        }
+    }
 }
 #[derive(Deserialize)]
 pub struct Claimed {
@@ -131,20 +147,51 @@ pub fn set_update(
     public_key: Option<String>,
     extension_dir: Option<String>,
 ) -> Result<()> {
+    set_update_with_policy(
+        root,
+        source,
+        public_key,
+        extension_dir,
+        crate::update::SourcePolicy::STRICT,
+    )
+}
+
+/// 同上，但按给定策略校验源。开发通道（明文 http）由调用方显式传入
+/// [`crate::update::SourcePolicy::DEV`]；策略同时被**记进配置**，
+/// 这样以后每次升级用的都是同一套规则，而不是「设置时宽松、升级时严格」。
+pub fn set_update_with_policy(
+    root: &Path,
+    source: Option<String>,
+    public_key: Option<String>,
+    extension_dir: Option<String>,
+    policy: crate::update::SourcePolicy,
+) -> Result<()> {
     for value in [&source, &public_key, &extension_dir].into_iter().flatten() {
         if value.len() > 4096 || value.contains('\0') {
             bail!("invalid update configuration");
         }
     }
     if let Some(value) = &source {
-        crate::update::valid_source(value)
-            .then_some(())
-            .ok_or_else(|| anyhow::anyhow!("update source must be a canonical https origin"))?;
-        crate::update::verifying_key(
-            public_key
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("a pinned release key is required"))?,
-        )?;
+        policy.valid_source(value).then_some(()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "update source must be a canonical {} origin",
+                if policy.allow_insecure {
+                    "https or http"
+                } else {
+                    "https"
+                }
+            )
+        })?;
+        match &public_key {
+            Some(key) => {
+                crate::update::verifying_key(key)?;
+            }
+            // 只有开发通道允许「有源、没有签名公钥」：那种通道服务的是**扩展更新**
+            // （扩展不签名，信任锚是同源 + sha256），Agent 自身则明确报「不可升级」。
+            // 正式通道仍然要求两条都在，免得出现一个看着配好了、其实验不了签的通道。
+            None if policy.allow_insecure => {}
+            None => bail!("a pinned release key is required"),
+        }
     } else if public_key.is_some() {
         // A key that can never be used would only hide a caller mistake: say so
         // instead of storing a half-configured update channel.
@@ -155,6 +202,8 @@ pub fn set_update(
     cfg.update_source = source;
     cfg.update_public_key = public_key;
     cfg.extension_dir = extension_dir;
+    // 策略跟着源一起存：升级时读回来的是「当初同意的那套规则」。
+    cfg.allow_insecure_update_source = policy.allow_insecure && cfg.update_source.is_some();
     // Reaching here the pair is either both set or both clear, so a bare write
     // is enough — there is no half-configured state to normalise away.
     storage::write(&root.join("config.json"), &cfg)
@@ -384,5 +433,65 @@ mod tests {
             assert!(origin(x).is_err());
         }
         assert!(origin("https://example.com").is_ok());
+    }
+
+    const DEV_SOURCE: &str = "http://10.9.8.162:6111/cloudfile-updates-dev";
+
+    #[test]
+    fn a_plain_http_source_needs_the_explicit_dev_policy() {
+        let (_dir, root) = storage::test_root();
+        // 严格策略：明文源被拒绝，而且**什么都没写进去**（不留半配置状态）。
+        assert!(set_update(&root, Some(DEV_SOURCE.into()), None, None).is_err());
+        assert!(config(&root).unwrap().update_source.is_none());
+
+        // 开发策略：允许，而且策略本身被记进配置 —— 以后升级读回来的是同一条规则。
+        set_update_with_policy(
+            &root,
+            Some(DEV_SOURCE.into()),
+            None,
+            None,
+            crate::update::SourcePolicy::DEV,
+        )
+        .unwrap();
+        let saved = config(&root).unwrap();
+        assert_eq!(saved.update_source.as_deref(), Some(DEV_SOURCE));
+        assert!(saved.allow_insecure_update_source);
+        assert_eq!(saved.update_policy(), crate::update::SourcePolicy::DEV);
+
+        // 清空时开关一并归零：不留一个「开着口子却没有源」的状态。
+        set_update(&root, None, None, None).unwrap();
+        let cleared = config(&root).unwrap();
+        assert!(!cleared.allow_insecure_update_source);
+        assert_eq!(cleared.update_policy(), crate::update::SourcePolicy::STRICT);
+    }
+
+    #[test]
+    fn the_strict_policy_still_requires_a_pinned_key() {
+        let (_dir, root) = storage::test_root();
+        // 正式通道：只给源不给公钥 = 一个验不了签的通道，拒绝。
+        assert!(set_update(
+            &root,
+            Some("https://updates.example.com".into()),
+            None,
+            None
+        )
+        .is_err());
+        // 开发通道允许：那种通道只服务扩展更新（扩展不签名），Agent 自身会明确报「不可升级」。
+        set_update_with_policy(
+            &root,
+            Some("https://updates.example.com".into()),
+            None,
+            None,
+            crate::update::SourcePolicy::DEV,
+        )
+        .unwrap();
+        let saved = config(&root).unwrap();
+        assert!(saved.update_public_key.is_none());
+        assert_eq!(
+            saved.update_source.as_deref(),
+            Some("https://updates.example.com")
+        );
+        // 「有公钥没源」永远拒绝（保持原契约）。
+        assert!(set_update(&root, None, Some("x".into()), None).is_err());
     }
 }
