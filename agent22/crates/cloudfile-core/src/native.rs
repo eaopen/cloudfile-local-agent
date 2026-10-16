@@ -148,7 +148,14 @@ fn find(root: &Path, repo_id: &str, path: &str, mode: &str) -> Result<Option<ses
 /// credentials are never included.
 pub fn task_summary(root: &Path) -> Value {
     let mut rows = Vec::new();
-    for task in session::tasks(root).unwrap_or_default() {
+    // 任务根不可信时**不能**报成「没有任务」：扩展据此判断要不要提示，
+    // 把「状态文件权限被改松了」说成「一切正常、没有任务」是误导，用户会以为工作副本没了。
+    // Go 侧同一处是 fail closed（非私有任务目录直接报错），这里保持同义。
+    let tasks = match session::tasks(root) {
+        Ok(tasks) => tasks,
+        Err(error) => return json!({"ok": false, "error": error.to_string()}),
+    };
+    for task in tasks {
         let changed = session::local_path(root, &task)
             .and_then(|path| session::digest(&path))
             .map(|digest| digest != task.baseline_digest);

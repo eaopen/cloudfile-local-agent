@@ -52,6 +52,8 @@ pub mod device;
 pub mod exclusive;
 /// 浏览器扩展的自更新（下载 + 校验 + 原子替换目录）。
 pub mod extension;
+/// 「只有属主能碰吗」—— 读侧加固的唯一判据（对应 Go 的 `internal/fsaccess`）。
+pub mod fsaccess;
 pub mod paired_session;
 /// 本机自检：把「这台机器上装的东西到底能不能工作」变成一次可脚本化的问答。
 pub mod selftest;

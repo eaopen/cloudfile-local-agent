@@ -221,7 +221,13 @@ pub fn task_dir(root: &Path, id: &str) -> Result<PathBuf> {
     Ok(crate::workspace::tasks_root(root).join(id))
 }
 pub fn load(root: &Path, id: &str) -> Result<Task> {
-    let task: Task = storage::read(&task_dir(root, id)?.join("task.json"))?;
+    // 读前加固：任务记录必须是**私有的普通文件**。与 Go 的 store 同一处判断
+    // （`internal/taskcenter/store.go`: 非私有 = ErrCorrupt），语义是 **fail closed** ——
+    // 一份权限松掉的状态文件不能被当成可信输入去授权退出、上传或续租。
+    // Windows 上这一条无从判断（见 fsaccess::private），其余加固照旧。
+    let path = task_dir(root, id)?.join("task.json");
+    crate::fsaccess::private_file(&path)?;
+    let task: Task = storage::read(&path)?;
     if task.task_id != id {
         bail!("task identity mismatch");
     }
@@ -241,14 +247,20 @@ pub fn tasks(root: &Path) -> Result<Vec<Task>> {
     if !dir.exists() {
         return Ok(vec![]);
     }
+    // 任务根必须私有：对应 Go 的 `store.go`「非私有任务目录 = 硬错」。
+    // 这里**不是**跳过，而是报错 —— 悄悄少列一个任务会让用户以为工作副本丢了，
+    // 而真实原因是权限被人改松了，那正是需要说出来的事。
+    crate::fsaccess::private_directory(&dir)?;
     let mut result = Vec::new();
-    for entry in fs::read_dir(dir)? {
+    for entry in fs::read_dir(&dir)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
         }
         let id = entry.file_name().to_string_lossy().into_owned();
         if task_id(&id) && entry.path().join("task.json").exists() {
+            // 单个任务目录也各自要求私有：任务根是 0700 不代表里面的目录没被改过。
+            crate::fsaccess::private_directory(&entry.path())?;
             result.push(load(root, &id)?);
         }
     }

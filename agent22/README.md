@@ -193,6 +193,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 - `cloudfile-core`：会话、用户配置、任务记录、设备签名、提交快照与全量上传；`exclusive` 模块负责独占 Checkout 租约与 Commit/Checkin，`cdc` 模块负责大文件分块切分与计划/暂存/发布链路，`guard` 模块是“能否安全退出 / 升级”的唯一判定来源，`settings` 负责本机偏好与悬浮位置，`workspace` 负责工作副本根目录策略与一次性搬迁，`apps` 负责应用检测与自定义打开规则，`hostreg` / `update` / `autostart` 负责注册、版本目录与登录项。
 - `cloudfile-core` 的三个 Windows 底层保障模块：`winreg`（进程内读写注册表）、`childproc`（子进程不弹控制台窗口）、`shortcut`（「启动」文件夹里的 `.lnk`）。注册、登录项、WebView2 探测、应用探测**一律走它们**，不再 spawn `reg.exe`——否则父进程是 GUI（Tauri 桌面）时每次调用都会闪一个黑窗口，而且在禁用 `reg.exe` 的机器上会直接失败而不是降级。只有「打开文档的应用」与「必须脱离宿主存活的升级进程」例外，前者需要窗口、后者用 `DETACHED_PROCESS` 自带无控制台。
+- 读前加固只有一处判据：`fsaccess`（对应 Go 的 `internal/fsaccess`）。任务目录、任务记录、偏好文件在**读**之前都要求「私有的普通文件/目录」，语义是 **fail closed**（与 Go 的 store 层一致）：一份权限被改松的状态文件不能被当成可信输入去授权退出、上传或续租。列表类接口不会把它报成「没有任务」——那会让人以为工作副本丢了。**Windows 上这条判据是刻意的 no-op**：`Metadata` 只反映只读属性，套 POSIX 位会把每一个状态路径都判死；真实访问由 NTFS ACL 管，而 ACL 不通过 `Metadata` 暴露。所以 Windows 上的加固是「绝对路径 + 非重解析点 + 普通文件 + 体积上限」，不含权限私有。
 - Windows 的登录项有**两条途径**，装的时候依次尝试：先写当前用户的 `Run` 键，被组策略或安全软件锁住时（企业机器上常见）退到「启动」文件夹里的 `CloudFileAgent22.lnk`。两条都用 `IShellLinkW`/`IPersistFile` 由 shell 自己维护格式，不手写二进制。`--status` 与设置界面会报出实际生效的是哪一条（`run-key` / `startup-folder`），因为这两种情况在任务管理器里长得完全不一样。两条途径都带上 `--autostart`：登录启动必须进托盘而不是抢焦点。
 - `cloudfile-native-host`：有界 stdio 消息、本机请求转交，以及安装/升级/回退用的命令行。
 - 本机自检（`selftest` 模块）：把「这台机器上装的东西到底能不能工作」变成一次可脚本化的问答（`--self-test`，两个入口共用同一套检查）。十二项各自独立跑、独立报，输出固定形状的 JSON，有项确实不工作时退出码非 0。**刻意不创建窗口、不发网络请求**：建窗口依赖窗口站/桌面会话，在服务、SSH、CI 上必然不稳，自检本身变成「时好时坏」就没有价值；网络请求要等超时，会把「10 秒出结论」拖成「30 秒也不一定」。更新源只报「配没配、够不够用」，内容对不对由 `--check-update` 回答。
@@ -209,7 +210,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（**149 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（**153 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`；另有 4 项 `#[cfg(unix)]` 用例只在 CI 的 macOS 上跑——权限判据在 Windows 上是刻意的 no-op，所以它的 POSIX 行为只能在那里验）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
 引导体与 `--install` 各有确定性用例：引导体那边起回环 HTTP 服务验「主源可用则备源一次不探、`--dry-run` 不建目录也不下载、缺公钥或公钥非法时**停在下载之前**、裸开关连同取值一起转发」；`--install` 那边验「主备选择、失败时列出每个地址的原因、可用的地址写回配置」。`CLOUDFILE_AGENT2_HOME` 的覆盖（含相对路径被拒）也有用例。
 
 安装器（`--install`）的主备源行为有确定性用例：测试里起一个回环 HTTP 服务当主源、把一个没人监听的端口当备源，断言「只探测了主源、备源一次没碰、可用的地址被写回 config.json、退出码 0」；另两条覆盖「没给地址就拒绝且不写任何配置」与「两个都不通时报出两个地址」。对真实开发通道跑 `--install` 验证了**失败路径**：主源（域名）被网络拦截、备源返回 404（通道上还没有 Rust 约定的清单），报告如实列出两条原因与各自地址。

@@ -106,6 +106,9 @@ pub fn load(root: &Path) -> Result<Settings> {
     if !p.exists() {
         return Ok(Settings::default());
     }
+    // 读前加固，对应 Go 的 `internal/taskcenter/preferences.go`（非私有 = ErrCorrupt）：
+    // 权限松掉的偏好文件不能当成可信输入。Windows 上无从判断（见 fsaccess::private）。
+    crate::fsaccess::private_file(&p)?;
     let settings: Settings = storage::read(&p)?;
     settings.validate()?;
     Ok(settings)
@@ -179,6 +182,20 @@ mod tests {
         crate::storage::test_root()
     }
 
+    /// 以「Agent 自己会写出的权限」植入一个状态文件。
+    ///
+    /// `std::fs::write` 得到的是 0644（受 umask 影响），在 POSIX 上会被
+    /// `fsaccess::private_file` 判成「不可信状态」—— 那会让下面这些用例变成在测权限，
+    /// 而不是在测「损坏的文件怎么处理」。所以显式落成 0600，与 `storage::write` 一致。
+    fn plant(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[test]
     fn defaults_never_authorise_anything() {
         let settings = Settings::default();
@@ -228,10 +245,30 @@ mod tests {
     fn corrupt_file_is_reported_and_never_reset() {
         let (_dir, root) = tmp();
         let root = root.as_path();
-        std::fs::write(path(root), b"{ not json").unwrap();
+        plant(&path(root), b"{ not json");
         assert!(load(root).is_err());
         // A corrupt file means "never configured" — the workspace root then falls back to
         // the platform default (workspace::resolve) instead of inventing a broken path.
+        assert!(configured_workspace_root(root).is_none());
+    }
+
+    /// 权限松掉的状态文件必须被拒（fail closed），与 Go 的 preferences.go 同一处判断。
+    /// Windows 上这一条无从判断（`fsaccess::private` 恒为 true），所以用例只在 POSIX 上跑。
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_preferences_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root) = tmp();
+        let root = root.as_path();
+        // 先按正常路径写出一份合法设置，确认它本来读得出来。
+        update(root, |settings| settings.notify_on_saved = false).unwrap();
+        assert!(load(root).is_ok());
+
+        // 只把权限放松（内容一字不改）—— 内容仍然是合法的，所以拒绝的唯一理由就是权限。
+        std::fs::set_permissions(&path(root), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = load(root).unwrap_err().to_string();
+        assert!(error.contains("private"), "{error}");
+        // 而且「没配过」的回落仍然安全：不因为一份不可信文件就编出一个工作区路径。
         assert!(configured_workspace_root(root).is_none());
     }
 
@@ -250,7 +287,7 @@ mod tests {
             configured_workspace_root(root),
             Some(PathBuf::from(WORKSPACE))
         );
-        std::fs::write(path(root), br#"{"schema":1,"upload":true}"#).unwrap();
+        plant(&path(root), br#"{"schema":1,"upload":true}"#);
         assert!(load(root).is_err());
     }
 }
