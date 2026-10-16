@@ -365,6 +365,36 @@ fn serve(body: &'static [u8]) -> String {
 }
 
 #[test]
+fn the_private_root_can_be_moved_with_the_documented_variable() {
+    let sandbox = Sandbox::new();
+    // 现场常把 Agent 装到别的盘；install.cmd 一直有这个变量，Rust 侧现在也认它。
+    let elsewhere = sandbox.local_app_data.clone().unwrap().join("Moved22");
+    let output = sandbox
+        .command()
+        .env("CLOUDFILE_AGENT2_HOME", &elsewhere)
+        .args(["--self-test"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["root"], elsewhere.to_string_lossy().as_ref());
+    assert!(elsewhere.is_dir(), "被指定的根目录应当被创建");
+    // 相对路径一律拒绝：那会让「装到哪」取决于当前目录。
+    let relative = sandbox
+        .command()
+        .env("CLOUDFILE_AGENT2_HOME", "relative-home")
+        .args(["--self-test"])
+        .output()
+        .unwrap();
+    assert!(!relative.status.success());
+    assert!(
+        String::from_utf8_lossy(&relative.stderr).contains("absolute path"),
+        "{}",
+        String::from_utf8_lossy(&relative.stderr)
+    );
+    sandbox.cleanup();
+}
+
+#[test]
 fn the_installer_needs_a_source_before_it_touches_anything() {
     let sandbox = Sandbox::new();
     let refusal = sandbox.refuses(&["--install"]);

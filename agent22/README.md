@@ -33,6 +33,9 @@ cloudfile-native-host --host-state                                       # 查�
 cloudfile-native-host --rollback-host                                    # 还原上一次被替换的注册
 cloudfile-native-host --unregister-host                                  # 只移除本 Agent 写入的注册
 cloudfile-native-host --enable-autostart / --disable-autostart           # 可选登录启动
+# 空白机器：先跑引导体（它只做定源 + 验签 + 下载 native host，然后交给下面那条命令）
+cloudfile-install --source https://host/dir --source-fallback https://ip/dir --extension-id <id>
+
 cloudfile-native-host --install --source https://host/dir --source-fallback https://ip/dir \
     --public-key <b64> --extension-id <id>                               # 一键安装/修复
 cloudfile-native-host --set-update-source https://host/dir --public-key <b64>  # 只配置更新通道
@@ -47,6 +50,18 @@ cloudfile-native-host --self-test                                        # 本�
 cloudfile-desktop --self-test                                            # 同一套检查，从桌面进程那一侧看
 ```
 
+空白机器上什么都没有，而 `--install` 需要一个**已存在的**二进制来跑，所以另有一个引导体
+`cloudfile-install`（对应 Go 侧 `install.cmd` 的角色）：
+
+- 它**不带任何负载**：定源（同样的主备探测）→ 取**已签名**的清单并用**内置的钉住公钥**验签 →
+  下载 `cloudfile-native-host`（校验清单里的 sha256）→ 把参数原样转给它 `--install`。
+  注册、暂存、健康检查、激活、自启、启动全部仍由 native host 完成 —— 会改机器状态的动作只有一份实现。
+- 与 `install.cmd` 的本质区别：`install.cmd` 从通道下载注册脚本并**无签名**地执行（只查 sha256）；
+  这里必须先验签才下载任何字节，而且**公钥在打包时注入**（`CLOUDFILE_INSTALL_PUBLIC_KEY`），
+  绝不在运行时从通道取 —— 否则「谁签发」就变成「通道说了算」。没注入又没给 `--public-key` 时它**拒绝干活**。
+- `--dry-run` 只定源并报告计划、不改机器：现场排查「这台机器能不能连上通道」用。
+- 双击启动（无参数 + 终端）时结尾会等回车，自动化里不会挂住；`--no-pause` 可显式关掉。
+
 一键安装（`--install`）等价于 Go 的 `install.cmd`，但目标机器**不需要任何脚本运行时**：
 
 - **主备地址**：`--source` 是主源（域名），`--source-fallback` 是备用源（通常是直连静态服务的 IP）。依次探测，**把实际可用的那个写回配置** —— 不然用户装完、第一次升级时才发现主源在这台机器上根本不通。主源可用时备源一次都不会被探测（省掉一次超时等待）；两个都不通时报错里带着每个地址**各自的原因**，只报一句「安装失败」在现场没有用。空地址会被跳过，主备写成同一个地址只探一次。
@@ -54,6 +69,8 @@ cloudfile-desktop --self-test                                            # 同�
 - **幂等**：已经装好的机器重跑一遍等于**修复** —— 注册与自启会重做，二进制不动（清单不比当前新就不换）。
 - 自启失败与启动失败都**不判安装失败**（各只警告一句）：它们和注册是两件事，谁挂了都不该拖累另一个，二进制已经就位、用户也能自己双击。
 - 可跳过：`--skip-registration` / `--skip-autostart` / `--skip-launch`（现场分步排查、或只想升级二进制时用）。
+- **装到哪**：`CLOUDFILE_AGENT2_HOME` 覆盖 Agent 的整棵树（配置、任务、版本），与 Go 的 `install.cmd` / `internal/home` 一致；引导体的 `--install-dir` 是同一件事的显式写法。相对路径一律拒绝。
+- **全新安装与升级走同一条路**：先暂存（健康检查通过才落进版本目录）、再按「有没有旧注册」决定接管还是新建注册。`update::activate` 是「接管既有注册」专用的，所以注册与激活在 `--install` 里是分开的两步 —— 否则空白机器上会因为「没有旧注册可接管」而失败。
 
 更新通道的信任策略：
 
@@ -150,6 +167,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 - 本机自检（`selftest` 模块）：把「这台机器上装的东西到底能不能工作」变成一次可脚本化的问答（`--self-test`，两个入口共用同一套检查）。十二项各自独立跑、独立报，输出固定形状的 JSON，有项确实不工作时退出码非 0。**刻意不创建窗口、不发网络请求**：建窗口依赖窗口站/桌面会话，在服务、SSH、CI 上必然不稳，自检本身变成「时好时坏」就没有价值；网络请求要等超时，会把「10 秒出结论」拖成「30 秒也不一定」。更新源只报「配没配、够不够用」，内容对不对由 `--check-update` 回答。
 - 浏览器扩展的自更新（`extension` 模块）：与 Agent 清单**同级、同一个源**的 `extension-update.json`（`version` / `zip_url` / `sha256` / `notes`），下载后校验 sha256、解包到临时目录、核对包内 `manifest.json` 的版本与清单一致，再整体改名换过去。归档按不可信输入处理：绝对路径、`..`、反斜杠（Windows 上的 zip slip）、符号链接、非普通文件、超过 256 MiB 一律拒绝，且只写新建文件。替换前上一版会改名到 `<dir>.prior`，换不过去就放回原位；`<dir>.prior` 已存在时拒绝动作，等人工看一眼。装完由扩展自己 `chrome.runtime.reload()` 生效——Chrome 不允许外部进程替换已加载的扩展，所以这一步结束时是「文件已就位」，不是「已生效」。
 - `cloudfile-desktop`：唯一任务执行进程与轻量静态界面（`ui/` 下四组静态资源：任务中心、悬浮入口、轻提示、样式），无 Node 运行时。
+- `cloudfile-install`：引导体，只给空白机器用（定源 → 验签 → 下载 native host → 转交 `--install`）。它自己不带负载，见上一节。
 
 本机 IPC 使用用户数据目录下的短期文件邮箱及进程锁，无 localhost 服务。
 请求成功处理后移除票据；进程中断后不会自动重放一次性票据。
@@ -160,7 +178,9 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（**142 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（**149 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+引导体与 `--install` 各有确定性用例：引导体那边起回环 HTTP 服务验「主源可用则备源一次不探、`--dry-run` 不建目录也不下载、缺公钥或公钥非法时**停在下载之前**、裸开关连同取值一起转发」；`--install` 那边验「主备选择、失败时列出每个地址的原因、可用的地址写回配置」。`CLOUDFILE_AGENT2_HOME` 的覆盖（含相对路径被拒）也有用例。
+
 安装器（`--install`）的主备源行为有确定性用例：测试里起一个回环 HTTP 服务当主源、把一个没人监听的端口当备源，断言「只探测了主源、备源一次没碰、可用的地址被写回 config.json、退出码 0」；另两条覆盖「没给地址就拒绝且不写任何配置」与「两个都不通时报出两个地址」。对真实开发通道跑 `--install` 验证了**失败路径**：主源（域名）被网络拦截、备源返回 404（通道上还没有 Rust 约定的清单），报告如实列出两条原因与各自地址。
 
 扩展自更新**整条链路**已对着真实开发通道实测：`--set-update-source http://10.9.8.162:6111/cloudfile-updates-dev --allow-insecure-source` → `--update-extension` 从明文 http 下载真实发布的包（摘要与清单一致）、解出 10 个条目（含 `icons/` 子目录）、装成 1.0.4；`--self-test` 随后如实报出「已显式放行明文 http」与「1.0.4」，不带开关时同一命令被拒（`must be a canonical https origin`）。
@@ -172,7 +192,8 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 - **Windows 实机**。注册表读写、WebView2 探测与登录项的两条途径（`Run` 键写入 → 读回 → 撤销，「启动」文件夹 `.lnk` 写入 → 读回 → 撤销，含 shell 路径与文档化公式一致）已在 Windows 11 上实测；**Tauri 窗口与托盘行为、应用探测的真机回归仍未做**。
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
 - **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
-- **Rust Agent 自身的更新（一键安装的“换二进制”那一步）**。通道侧必须先提供符合 Rust 约定的清单：源写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`。现有开发通道里只有给 Go 侧用的 `update.json`（名字与位置都不同），所以 `--install`/`--update` 走到下载那一步必然 404 —— 这不是 Rust 侧的缺陷，而是**通道侧待补**（扩展更新不受影响，已经实测通过）。补齐后，`--install` 的端到端才算真的走完。
+- **Rust Agent 自身的更新（一键安装的“换二进制”那一步）**。通道侧必须先提供符合 Rust 约定的清单：源写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`，并**用 Rust 的私钥签名**。现有开发通道里只有给 Go 侧用的 `update.json`（名字、位置、信任模型都不同），所以 `--install` / `--update` / `cloudfile-install` 走到下载那一步必然 404。这不是 Rust 侧的缺陷，而是**通道侧待补**（扩展更新不受影响，已经实测通过）。补齐后，`--install` 与引导体的端到端才算真的走完。
+- **引导体的公钥注入与发布**。`cloudfile-install` 的公钥是**打包时注入**的（`CLOUDFILE_INSTALL_PUBLIC_KEY`），默认没有 —— 这是刻意的：没有钉住的公钥就不该开始安装。发版流程需要：① 用 Rust 的私钥签一份发布清单；② 注入公钥构建 `cloudfile-install`；③ 把两者一起发到通道。`make-dev-release` 目前只处理 Go 侧的产物，Rust 通道的发布脚本还没写。
 - **无感原位升级（B 类）**。不迁移旧设备身份与原任务，首次切换需重新配对。
 - **Code signing / 公证 / 运行时安装器**。当前 ZIP 是开发包。
 

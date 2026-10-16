@@ -6,10 +6,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 本机私有目录（Agent 的整棵树：配置、任务、版本）。
+///
+/// `CLOUDFILE_AGENT2_HOME` 可以覆盖它 —— 对齐 Go 侧 `install.cmd` 与 `internal/home`：
+/// 现场常把 Agent 装到别的盘，安装器与测试也需要能把整棵树搬走。
 pub fn root() -> Result<PathBuf> {
-    let path = dirs::data_local_dir()
-        .context("user data directory unavailable")?
-        .join("CloudFileAgent22");
+    let path = match std::env::var_os("CLOUDFILE_AGENT2_HOME") {
+        Some(home) if !home.is_empty() => {
+            let path = PathBuf::from(home);
+            if !path.is_absolute() {
+                bail!("CLOUDFILE_AGENT2_HOME must be an absolute path");
+            }
+            path
+        }
+        _ => dirs::data_local_dir()
+            .context("user data directory unavailable")?
+            .join("CloudFileAgent22"),
+    };
     private_dir(&path)?;
     Ok(path)
 }

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/cloudfile-core", "crates/cloudfile-native-host", "crates/cloudfile-desktop"]
+members = [
+    "crates/cloudfile-core",
+    "crates/cloudfile-native-host",
+    "crates/cloudfile-desktop",
+    "crates/cloudfile-install",
+]
 default-members = ["crates/cloudfile-core", "crates/cloudfile-native-host"]
 
 [workspace.package]

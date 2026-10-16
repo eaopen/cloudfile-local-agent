@@ -376,39 +376,52 @@ fn run_install(root: &Path, host: &str, args: &[String]) -> anyhow::Result<()> {
     ensure_install_root(&install)?;
 
     let (source, policy, probes) = resolve_source(root, args)?;
-    let binaries = install_binaries(root, host)?;
+    let dir = hostreg::manifest_dir()?;
+
+    // 二进制：清单里有更新才暂存。暂存只写版本目录、**不碰注册** —— 「健康检查通过之前
+    // 什么都不替换」这条安全顺序仍然成立；而全新安装这边没有旧注册可以接管
+    // （`update::activate` 是「接管既有注册」专用的），所以注册必须能和激活分开做。
+    let (binaries, staged) = stage_binaries(root)?;
 
     // 注册 Host 是安装的实质产物：没有它扩展就找不到 Agent。
-    let registration = if args.iter().any(|value| value == "--skip-registration") {
-        json!({"skipped": true})
+    let (registration, registered_dir) = if args.iter().any(|value| value == "--skip-registration")
+    {
+        (
+            json!({"skipped": true}),
+            host_binary()?.parent().map(Path::to_path_buf),
+        )
     } else {
-        let extension_id = flag(args, "--extension-id").ok_or_else(|| {
-            anyhow::anyhow!("--install 需要 --extension-id <id>（或加 --skip-registration）")
-        })?;
-        let takeover = args.iter().any(|value| value == "--takeover");
-        let dir = hostreg::manifest_dir()?;
-        let outcome = hostreg::install(&dir, host, &extension_id, &host_binary()?, takeover)
-            .map_err(|error| {
+        let (target, extension_id, takeover) =
+            registration_target(&dir, host, staged.as_ref(), args)?;
+        let outcome = hostreg::install(&dir, host, &extension_id, &target, takeover).map_err(
+            |error| {
                 anyhow::anyhow!(
                     "{error}\n\n如果确认这属于本机 Agent，请加 --takeover 重新注册；原注册会先备份并可用 --rollback-host 还原"
                 )
-            })?;
-        serde_json::to_value(outcome)?
+            },
+        )?;
+        let directory = target.parent().map(Path::to_path_buf);
+        (serde_json::to_value(outcome)?, directory)
     };
 
-    // 自启失败**不判安装失败**：它和注册是两件事，谁挂了都不该拖累另一个
-    // （和 Go 的 Set-Autostart 一样，失败只警告）。真正重要的是别让用户没有任何入口。
+    // 自启与启动都用**注册真正指向的那个目录**：全新安装时正在跑的可能只是引导下载的临时
+    // 副本，它旁边没有桌面进程。失败都只警告 —— 二进制已经就位，用户能自己双击。
+    let desktop = registered_dir
+        .as_deref()
+        .map(|directory| directory.join(DESKTOP_NAME));
     let login_item = if args.iter().any(|value| value == "--skip-autostart") {
         None
     } else {
-        match desktop_binary().map(|desktop| autostart::install(root, &desktop)) {
-            Ok(Ok(item)) => Some(item.id().to_string()),
-            Ok(Err(error)) => {
-                eprintln!("警告：开机自启没设上（{error:#}）；重启后手动双击任务中心即可。");
-                None
-            }
-            Err(error) => {
-                eprintln!("警告：{error:#}；开机自启跳过。");
+        match desktop.as_deref().filter(|path| path.is_file()) {
+            Some(desktop) => match autostart::install(root, desktop) {
+                Ok(item) => Some(item.id().to_string()),
+                Err(error) => {
+                    eprintln!("警告：开机自启没设上（{error:#}）；重启后手动双击任务中心即可。");
+                    None
+                }
+            },
+            None => {
+                eprintln!("警告：注册目录里没有 {DESKTOP_NAME}，开机自启跳过。");
                 None
             }
         }
@@ -417,7 +430,7 @@ fn run_install(root: &Path, host: &str, args: &[String]) -> anyhow::Result<()> {
     let launched = if args.iter().any(|value| value == "--skip-launch") {
         false
     } else {
-        launch_desktop()?
+        launch_desktop(desktop.as_deref())?
     };
 
     println!(
@@ -432,6 +445,10 @@ fn run_install(root: &Path, host: &str, args: &[String]) -> anyhow::Result<()> {
                 "error": probe.error,
             })).collect::<Vec<_>>(),
             "binaries": binaries,
+            "staged_version": staged.as_ref().map(|(version, _)| version.clone()),
+            "registered_directory": registered_dir
+                .as_deref()
+                .map(|dir| dir.to_string_lossy().into_owned()),
             "registration": registration,
             "login_item": login_item,
             "desktop_started": launched,
@@ -502,34 +519,77 @@ fn resolve_source(
     Ok((source, policy, probes))
 }
 
-/// 二进制部分：清单里有更新的版本才动，已是最新就跳过（`--install` 同时是修复命令）。
-///
-/// 版本比较用的是 `cloudfile_core::VERSION`（正在跑的这份），因为后续的验签用的也是它 ——
-/// 两边用同一个基准，才不会出现「自认为有更新、验签却拒了」。
-fn install_binaries(root: &Path, host: &str) -> anyhow::Result<&'static str> {
+/// 二进制：清单里有更新才暂存，已是最新就跳过（`--install` 同时是修复命令）。
+/// 返回 (结论, 暂存好的 (版本, host 路径))。
+fn stage_binaries(root: &Path) -> anyhow::Result<(&'static str, Option<(String, PathBuf)>)> {
     let config = session::config(root)?;
     let (Some(source), Some(_)) = (
         config.update_source.clone(),
         config.update_public_key.as_ref(),
     ) else {
         // 只有扩展通道（开发通道常见）：二进制不升级，但安装照样可以完成。
-        return Ok("skipped");
+        return Ok(("skipped", None));
     };
     let policy = config.update_policy();
+    // 先**不验签**地读一眼版本号：验签本身会拒绝「不比当前新」的清单，而安装器必须先知道
+    // 有没有更新才能走幂等（修复）那条路。签名通过之前不会下载任何字节。
     let advertised = update::parse_release(&update::fetch_manifest_for(policy, &source)?)?;
     if update::compare(&advertised.version, cloudfile_core::VERSION) != std::cmp::Ordering::Greater
     {
-        return Ok("current");
+        return Ok(("current", None));
     }
-    apply_update(root, host, None)?;
-    Ok("updated")
+    // 同一份清单再取一次并完整验签。清单只有几十 KB、一台机器只跑一次安装，
+    // 不值得为了省这一次请求把「验签」拆到两个地方。
+    let (release, _, _) = fetch_verified_release(root, None)?;
+    let (_, staged_host) = stage_release(&release)?;
+    Ok(("staged", Some((release.version.clone(), staged_host))))
+}
+
+/// 注册该指向哪个二进制、用哪个扩展 ID、要不要接管。顺序就是优先级：
+///
+/// 1. 这次刚暂存了新版本 → 指它（升级与全新安装都指它）
+/// 2. 否则已有注册 → 沿用它（不无缘无故改别人的注册；`--extension-id` 显式给了才换）
+/// 3. 都没有 → 就地修复：指当前正在跑的这份
+fn registration_target(
+    dir: &Path,
+    host: &str,
+    staged: Option<&(String, PathBuf)>,
+    args: &[String],
+) -> anyhow::Result<(PathBuf, String, bool)> {
+    let existing = hostreg::state(dir, host, None)?;
+    let target = match staged {
+        // 暂存那一步返回的就是 host 的最终路径（版本目录里的那个），直接注册它。
+        Some((_, staged_host)) => staged_host.clone(),
+        None => match &existing.binary {
+            Some(binary) => binary.clone(),
+            None => host_binary()?,
+        },
+    };
+    // 已有注册时沿用它的扩展 ID：白名单不该因为重跑一次安装就被改掉。
+    let extension_id = flag(args, "--extension-id")
+        .or_else(|| existing.extension_id.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--install 需要 --extension-id <id>：本机还没有可接管的注册，\n\
+                 扩展 ID 只能由安装方给出（它决定「哪个扩展能调用本机 Agent」）"
+            )
+        })?;
+    // 有旧注册、或这次换了版本，都要显式接管：`hostreg::install` 会先把原 manifest
+    // 备份成 `<host>.previous.json`，可用 `--rollback-host` 还原。
+    let takeover = staged.is_some()
+        || existing.binary.is_some()
+        || args.iter().any(|value| value == "--takeover");
+    Ok((target, extension_id, takeover))
 }
 
 /// 装完立刻启动任务中心：否则用户重启之前右下角什么都没有。
 /// 桌面是 GUI 子系统程序，读写的都是自己的私有目录，启动它不会弹控制台。
-fn launch_desktop() -> anyhow::Result<bool> {
-    let desktop = desktop_binary()?;
-    let mut command = std::process::Command::new(&desktop);
+fn launch_desktop(desktop: Option<&Path>) -> anyhow::Result<bool> {
+    let Some(desktop) = desktop.filter(|path| path.is_file()) else {
+        eprintln!("警告：找不到 {DESKTOP_NAME}，任务中心没能自动启动；装好后手动双击即可。");
+        return Ok(false);
+    };
+    let mut command = std::process::Command::new(desktop);
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -551,6 +611,25 @@ fn launch_desktop() -> anyhow::Result<bool> {
 /// 下载、暂存、健康检查、激活。顺序就是安全属性：在暂存的构建起来并回答本地协议之前，
 /// 什么都替换不了正在运行的那份。
 fn apply_release(host: &str, release: &update::Release) -> anyhow::Result<()> {
+    let (install, staged_host) = stage_release(release)?;
+    // `activate` 是「接管既有注册」专用的：它从当前注册取扩展 ID、把注册指到新版本目录，
+    // 并备份原 manifest。全新安装没有旧注册可接管（会明确报错），那条路走 `--install`。
+    let dir = hostreg::manifest_dir()?;
+    update::activate(&install, &dir, host, &release.version)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "version": release.version,
+            "install_root": install.to_string_lossy(),
+            "native_host": staged_host.to_string_lossy(),
+        }))?
+    );
+    Ok(())
+}
+
+/// 下载 + 暂存 + 健康检查，返回 (安装根, 暂存好的 host 路径)。**不碰注册** ——
+/// 全新安装这边没有旧注册可以接管，所以这一步必须能单独用。
+fn stage_release(release: &update::Release) -> anyhow::Result<(PathBuf, PathBuf)> {
     let os = std::env::consts::OS;
     let mut files = Vec::new();
     for artifact in &release.artifacts {
@@ -567,6 +646,7 @@ fn apply_release(host: &str, release: &update::Release) -> anyhow::Result<()> {
     let staged = update::stage(&install, &release.version, os, &files)?;
     let staged_host = staged.join(update::Binary::NativeHost.file_name(os, &release.version));
     let staged_desktop = staged.join(update::Binary::Desktop.file_name(os, &release.version));
+    // 健康检查：新构建必须能起来并回答本地协议，否则一律不许留在版本目录里。
     let healthy = update::probe(&staged_host)
         .and_then(|reported| {
             anyhow::ensure!(
@@ -581,17 +661,7 @@ fn apply_release(host: &str, release: &update::Release) -> anyhow::Result<()> {
         let _ = std::fs::remove_dir_all(&staged);
         return Err(error);
     }
-    let dir = hostreg::manifest_dir()?;
-    update::activate(&install, &dir, host, &release.version)?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "version": release.version,
-            "install_root": install.to_string_lossy(),
-            "native_host": staged_host.to_string_lossy(),
-        }))?
-    );
-    Ok(())
+    Ok((install, staged_host))
 }
 
 fn run_stdio() -> anyhow::Result<()> {

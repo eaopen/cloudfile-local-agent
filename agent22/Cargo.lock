@@ -396,6 +396,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloudfile-install"
+version = "2.2.0-alpha.2"
+dependencies = [
+ "anyhow",
+ "cloudfile-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cloudfile-native-host"
 version = "2.2.0-alpha.2"
 dependencies = [
