@@ -145,7 +145,37 @@ powershell -ExecutionPolicy Bypass -File make-agent22-release.ps1 \
 
 验证：macOS 编译、静态检查与协议集成测试。CDC 分块切分与参考 Agent 的字节输出做交叉校验（32 MiB 镜像的块 ID、尺寸、SHA-256 与 File ID 完全一致），并在 mock Hub 上覆盖计划、只上传缺失块、发布、不划算回落、传输未启用回落与暂存被拒保留原 Intent。尚未完成运行中 Hub/Server + Chrome + Office 的端到端验收，也未实机验证 Windows，真实服务端分块上传仍待联调。
 
-## 运行
+## 安装引导（首次运行）
+
+桌面程序第一次启动（`settings.setup_completed` 为 false）时停在**安装引导页**，之后可以从左侧「安装引导」随时打开做修复。
+它把六件事按顺序列出来，并各自给出完成判据（判据全部来自 `setup_state`，界面不做推断）：
+
+| 步骤 | 判据 | 谁来做 |
+|---|---|---|
+| 安装 Agent | 进程正在运行 | 引导体 `cloudfile-install` / `install.cmd` |
+| 受信任的 CloudFile 服务 | `trusted_missing_defaults == 0` | 启动时自动补齐出厂默认项 |
+| 工作目录 | 目录存在 | 默认 `D:\CloudFileAgent2\workspace`，可在设置里改 |
+| 注册 Chrome Host | `host_registered` | 「一键完成」自动注册（固定扩展 ID） |
+| 开机自启 | `autostart_enabled` | 「一键完成」自动设置 |
+| 安装浏览器扩展 | `extension_version` 有值 | 自动下载解包；**最后在 Chrome 里点三下** |
+
+「一键完成」是幂等的：它依次做「补默认服务 → 建工作目录 → 注册 Host（接管会先备份）→ 设自启 → 部署扩展」，
+每一步独立成败，失败项在页面上带原因，可以再点一次重试。
+
+Chrome 不允许程序静默安装非商店扩展，所以最后一步只能提示：页面提供「打开扩展管理页」（用注册表
+`App Paths` 找到的 `chrome.exe` 打开 `chrome://extensions/`）和「打开扩展目录」，并显示固定的扩展 ID。
+开关「开发者模式 → 加载已解压的扩展程序」必须由用户点。
+
+**默认值都是 1.0 的形状，不需要用户重配一遍**：
+
+- 受信任服务：`http://10.9.8.162:6111`、`http://10.12.1.157:8092`、`http://etech.stcetech.ad01.sec.com`、
+  `https://etech.stcetech.ad01.sec.com`（`session::DEFAULT_ORIGINS`）。这些是**默认项**，界面上标「默认 · 不可删除」，
+  `session::untrust` 会拒绝删除它们；自己加的服务可以移除。
+- 工作目录：`D:\CloudFileAgent2\workspace`（1.0 的默认地址），本地副本落在其下的 `tasks\`。
+  `settings.workspace_root` 显式配置永远优先，设置面板有「恢复默认地址」。
+- 扩展 ID：`gocnpbhnbikcpnlafmodflddgnmfcjoc`（`hostreg::EXTENSION_ID`）。扩展 `manifest.json` 钉了 `key`，
+  所以 ID 与解压路径无关 —— 界面和安装都不再要求手输。
+
 
 在本目录执行（工具链由 `rust-toolchain.toml` 固定）：
 
@@ -170,16 +200,17 @@ python3 scripts/prepare-extension.py
 
 （`prepare-extension.py` 是构建期工具，只用于生成开发扩展副本；目标机器不需要 Python。）
 
-使用独立的 Chrome 配置文件（开发副本沿用现有扩展 ID，不能与正式扩展装在同一配置文件）。在扩展管理页以开发者模式加载 `dist/chrome-extension-agent22`，复制扩展 ID 后执行：
+使用独立的 Chrome 配置文件（开发副本沿用现有扩展 ID，不能与正式扩展装在同一配置文件）。在扩展管理页以开发者模式加载 `dist/chrome-extension-agent22`，然后：
 
 ```sh
 cargo build -p cloudfile-native-host --locked
-./target/debug/cloudfile-native-host --register-host --extension-id YOUR_EXTENSION_ID
+./target/debug/cloudfile-native-host --register-host
 ```
 
-也可以直接在任务中心的“Chrome 开发注册与升级”里填扩展 ID 注册，不必用命令行。
-注册只影响当前用户的 Host，不替换旧 Host；若该 Host 已被其他程序注册，会先报错，
-由用户确认后才备份并接管（原 Manifest 存为 `<host>.previous.json`，`--rollback-host` 可还原）。
+扩展 ID 是产品常量（`hostreg::EXTENSION_ID`），不需要传 —— 只有换扩展公钥重新打包时才需要 `--extension-id`。
+任务中心里也不再有「填 ID + 注册」这一路：引导页的「一键完成」或「Chrome 注册与升级」里的「重新注册」都用同一个常量。
+注册只影响当前用户的 Host，不替换旧 Host；若该 Host 已被其他程序注册，会先备份再接管
+（原 Manifest 存为 `<host>.previous.json`，`--rollback-host` 可还原）。
 
 ### Host 名（为什么 Windows 上是 `com.cloudfile.current_agent`）
 

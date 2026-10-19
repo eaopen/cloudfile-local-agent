@@ -33,9 +33,9 @@ shutil.copy2(root/'README.md',stage/'README.md')
 (stage/'INSTALL.txt').write_text(
  'CloudFile Agent 2.2（开发包）\n\n'
  '入口\n'
- '  cloudfile-native-host --install --source <origin> --public-key <base64url> \\\n'
- '      --extension-id <id>            一键安装/修复\n'
- '  cloudfile-install --source <origin> --public-key <base64url> --extension-id <id>\n'
+ '  cloudfile-native-host --install --source <origin> --public-key <base64url>\n'
+ '                                     一键安装/修复（扩展 ID 是固定的，不用传）\n'
+ '  cloudfile-install --source <origin> --public-key <base64url>\n'
  '                                     空白机器上的引导体（本开发包**未内置公钥**）\n\n'
  '说明\n'
  '  这个开发包里 cloudfile-install 没有内置公钥：它只在打包时注入，CI 不持有发布私钥。\n'

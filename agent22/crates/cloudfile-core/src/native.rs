@@ -449,9 +449,13 @@ pub fn update_extension(root: &Path) -> Result<String> {
     let source = config
         .update_source
         .context("尚未配置更新源；请先在 config.json 里设置 update_source")?;
-    let directory = config
-        .extension_dir
-        .context("尚未配置扩展目录；请先在 config.json 里设置 extension_dir")?;
+    let directory = config.extension_dir.clone().unwrap_or_else(|| {
+        // 没配置就用 agent 根目录下的 `extension\`：引导页一键部署扩展时
+        // 不能让用户先去 config.json 里手写一个目录。
+        root.join(crate::extension::DIR_NAME)
+            .to_string_lossy()
+            .into_owned()
+    });
     let dir = Path::new(&directory);
     let release = crate::extension::fetch_release(policy, &source)?;
     let installed = crate::extension::installed_version(dir);

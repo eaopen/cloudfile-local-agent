@@ -19,6 +19,12 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
+/// 解压后放在 agent 根目录下的子目录名（`<agent 根>\extension`）。
+///
+/// 引导页的「安装扩展」那一步要指给 Chrome 的就是这个目录，所以它必须是一个
+/// **可推导**的默认值，而不是只能由 `config.json` 的 `extension_dir` 决定。
+pub const DIR_NAME: &str = "extension";
+
 /// 与 Agent 清单同级、固定名字。
 ///
 /// 与 Agent 清单不同，扩展清单**只有一份**：`zip_url` 是相对路径（相对清单地址解析），

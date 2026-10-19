@@ -52,6 +52,17 @@ pub const LEGACY_HOSTS: &[&str] = &[
 
 pub const DESCRIPTION: &str = "CloudFile Agent 2.2 Native Host";
 
+/// 本产品对应的 Chrome 扩展 ID：**固定值**，不是每台机器一个。
+///
+/// 扩展的 `manifest.json` 里钉了 `key`（RSA 公钥），Chrome 由它推导 ID —— 所以
+/// ID 与解压到哪个目录无关，也不用用户去 `chrome://extensions` 里抄一串字符再回来粘贴。
+/// 「谁能调用本机 Agent」这件事仍然由 manifest 的 `allowed_origins` 决定，只是这个值
+/// 现在来自产品常量，而不是一次手输。
+///
+/// 换扩展公钥（重新打包 `key`）时必须同步改这里，否则注册出来的 Host 会拒绝
+/// 真正的扩展 —— `hostreg::install` 只校验 32 位 a-p 的形状，认不出「ID 是另一把钥匙的」。
+pub const EXTENSION_ID: &str = "gocnpbhnbikcpnlafmodflddgnmfcjoc";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registration {
     pub host: String,
@@ -426,6 +437,21 @@ mod tests {
         }
         // 自检与注册必须查同一个名字（lib.rs 的 HOST 只是转出）。
         assert_eq!(crate::HOST, HOST);
+    }
+
+    #[test]
+    fn the_product_extension_id_is_a_canonical_chrome_id() {
+        // Chrome 只发 [a-p]{32}；写错一个字符，注册出来的 Host 就只认一个不存在的扩展。
+        assert_eq!(EXTENSION_ID.len(), 32, "{EXTENSION_ID}");
+        assert!(
+            EXTENSION_ID.chars().all(|c| ('a'..='p').contains(&c)),
+            "{EXTENSION_ID}"
+        );
+        // 与 1.0 的注册脚本（`register-agent2-windows.ps1 -ExtensionId` 默认值）同一个 ID：
+        // 换 ID 等于让已经装好扩展的机器全部失联，必须是一次显式决定。
+        assert_eq!(EXTENSION_ID, "gocnpbhnbikcpnlafmodflddgnmfcjoc");
+        // 与注册时写进 manifest 的写法一致（界面与安装都引用同一个常量）。
+        assert_eq!(crate::EXTENSION_ID, EXTENSION_ID);
     }
 
     #[test]

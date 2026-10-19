@@ -53,9 +53,15 @@ const MARKER: &str = "mirror-root.txt";
 const REPORT: &str = "mirror-adopt.json";
 
 /// Windows 上首选镜像根——**常量**，不按 `app_root` 推导。
-/// 与 Go 侧 `D:\CloudFileAgent2\workspace` 同一个形状：固定的、与代理数据目录同名的路径。
+///
+/// 沿用 1.0 的默认地址 `D:\CloudFileAgent2\workspace`：从正式版升级上来的机器，
+/// 本地工作副本本来就落在那里，换客户端不该让用户再去设置一遍，也不该让
+/// 「我的文件去哪儿了」成为一个问题。任务目录会落在它下面的 `tasks\` 子目录，
+/// 与 1.0 的 `view\` / `edit\` 互不干扰。
+///
+/// 用户可以在任务中心里改成别的目录（`settings.workspace_root`），显式配置永远优先。
 #[cfg(windows)]
-const PREFERRED_ROOT: &str = "D:\\CloudFileAgent22";
+const PREFERRED_ROOT: &str = "D:\\CloudFileAgent2\\workspace";
 
 /// Windows 上「代理数据目录」的名字。
 const APP_DIR_NAME: &str = "CloudFileAgent22";
@@ -76,6 +82,20 @@ pub fn marker_path(app_root: &Path) -> PathBuf {
 /// 记录文件路径（在 agent 根目录下）。
 pub fn report_path(app_root: &Path) -> PathBuf {
     app_root.join(REPORT)
+}
+
+/// 界面上要显示的「默认地址」：**没做任何配置时**任务会落在哪里。
+///
+/// 与 [`resolve`] 的区别是它完全不受用户配置影响 —— 设置面板要能同时说清
+/// 「现在用的是哪个」和「恢复默认会回到哪」，否则「恢复默认」是一个盲操作。
+#[cfg(windows)]
+pub fn default_root_hint() -> String {
+    PREFERRED_ROOT.to_string()
+}
+
+#[cfg(not(windows))]
+pub fn default_root_hint() -> String {
+    String::new()
 }
 
 /// 解析工作区根目录（**不含** `tasks` 这一层）。
@@ -623,11 +643,12 @@ mod tests {
             assert!(is_default_app_root(&default_root));
             assert_eq!(
                 preferred_root(),
-                Some(PathBuf::from("D:\\CloudFileAgent22"))
+                Some(PathBuf::from("D:\\CloudFileAgent2\\workspace"))
             );
             let resolved = resolve(&default_root);
             assert!(
-                resolved == default_root || resolved == PathBuf::from("D:\\CloudFileAgent22"),
+                resolved == default_root
+                    || resolved == PathBuf::from("D:\\CloudFileAgent2\\workspace"),
                 "只能解析成安装根或首选盘，实际 {resolved:?}"
             );
             // 一旦真的切到首选盘，那个位置必须是固定本地盘（不是光驱/U 盘/网络盘）。

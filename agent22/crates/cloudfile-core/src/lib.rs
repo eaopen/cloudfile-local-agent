@@ -1,5 +1,7 @@
 pub mod apps;
 pub mod autostart;
+/// 找 Chrome、打开扩展管理页 —— 引导页「安装扩展」那一步只提示、不代替用户操作。
+pub mod browser;
 pub mod guard;
 pub mod hostreg;
 pub mod ipc;
@@ -42,6 +44,9 @@ pub const VERSION: &str = match option_env!("CLOUDFILE_AGENT2_VERSION") {
 /// 「注册用哪个名字」和「自带检查查哪个名字」必须是同一个常量，否则自检会在
 /// 一个根本没被注册的 host 上给出「未注册」，而扩展其实连得上。
 pub const HOST: &str = hostreg::HOST;
+/// 本产品固定的 Chrome 扩展 ID。与 [`HOST`] 同理：注册、状态显示、引导页
+/// 都必须引用同一个常量，不允许界面上再出现「手输 ID」的第二条路径。
+pub const EXTENSION_ID: &str = hostreg::EXTENSION_ID;
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

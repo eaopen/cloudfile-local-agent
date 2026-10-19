@@ -60,12 +60,12 @@ Update options:
                                  (kept so existing install scripts keep working)
 
 Registration options:
-  --extension-id <id>            Chrome extension ID to allow (32 chars, a-p)
-  --host-name <name>             host name (defaults to the development host)
+  --extension-id <id>            Chrome extension ID to allow (defaults to the product ID;
+                                 only pass this for a different build of the extension)
+  --host-name <name>             host name (defaults to this platform's host)
   --takeover                     back up and replace a host another program owns
 ";
 
-const DEV_USAGE: &str = "cloudfile-native-host --register-host --extension-id <id>";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let index = args.iter().position(|value| value == name)?;
@@ -138,8 +138,10 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&value)?);
         }
         "--register-host" => {
+            // 扩展 ID 是产品常量：正常路径不需要传，传了也只是同一组字符
+            // （`hostreg::install` 仍会校验 32 位 a-p 的形状）。
             let extension_id = flag(args, "--extension-id")
-                .ok_or_else(|| anyhow::anyhow!("--extension-id is required\n\n{DEV_USAGE}"))?;
+                .unwrap_or_else(|| hostreg::EXTENSION_ID.to_string());
             let takeover = args.iter().any(|value| value == "--takeover");
             let binary = host_binary()?;
             let dir = hostreg::manifest_dir()?;
@@ -569,14 +571,10 @@ fn registration_target(
         },
     };
     // 已有注册时沿用它的扩展 ID：白名单不该因为重跑一次安装就被改掉。
+    // 都没有就用产品常量 —— 扩展 ID 固定，安装不该要求用户抄一串字符。
     let extension_id = flag(args, "--extension-id")
         .or_else(|| existing.extension_id.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "--install 需要 --extension-id <id>：本机还没有可接管的注册，\n\
-                 扩展 ID 只能由安装方给出（它决定「哪个扩展能调用本机 Agent」）"
-            )
-        })?;
+        .unwrap_or_else(|| hostreg::EXTENSION_ID.to_string());
     // 有旧注册、或这次换了版本，都要显式接管：`hostreg::install` 会先把原 manifest
     // 备份成 `<host>.previous.json`，可用 `--rollback-host` 还原。
     let takeover = staged.is_some()

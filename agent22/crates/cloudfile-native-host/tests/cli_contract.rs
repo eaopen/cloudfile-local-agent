@@ -6,7 +6,7 @@
 //! the actual binary with `HOME` (and on Windows `LOCALAPPDATA`) redirected to
 //! a temporary directory, so the developer's own Chrome registration and private
 //! store are never touched.
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -306,9 +306,16 @@ fn an_invalid_extension_id_is_rejected_before_anything_is_written() {
         assert!(!refusal.is_empty());
         assert!(!sandbox.manifest().exists(), "{candidate} wrote a manifest");
     }
-    assert!(sandbox
-        .refuses(&["--register-host", "--host-name", DEV_HOST])
-        .contains("--extension-id is required"));
+    // 不传 ID 时用产品常量：扩展 ID 固定，安装不该要求用户抄一串字符。
+    let outcome = sandbox.run_json(&["--register-host", "--host-name", DEV_HOST]);
+    assert_eq!(outcome["host"], DEV_HOST);
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(sandbox.manifest()).unwrap()).unwrap();
+    assert_eq!(
+        written["allowed_origins"][0],
+        format!("chrome-extension://{}/", cloudfile_core::EXTENSION_ID)
+    );
+    sandbox.run(&["--unregister-host", "--host-name", DEV_HOST]);
 }
 
 #[test]
@@ -320,7 +327,12 @@ fn status_reports_the_local_component_contract() {
     // A fresh profile has no registration, but the report must still be whole.
     assert_eq!(status["registered"], false);
     assert_eq!(status["foreign"], false);
-    assert_eq!(status["autostart"], false);
+    // 登录项是**真实**的用户级状态（HKLM/HKCU 不随 HOME 变），开发机上可能本来就开着。
+    // 这里断言的是两个字段不能互相矛盾，而不是「这台机器一定没开自启」。
+    assert_eq!(
+        status["autostart"],
+        json!(status["autostart_mechanism"].is_string())
+    );
     assert_eq!(status["exit"]["safe_to_exit"], true);
     let install_root = Path::new(status["install_root"].as_str().unwrap());
     assert!(install_root.is_absolute(), "{install_root:?}");

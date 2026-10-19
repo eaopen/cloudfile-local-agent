@@ -50,6 +50,12 @@ pub struct Settings {
     pub float_hidden_when_empty: bool,
     /// Advisory mirror of the login-item state; the OS remains authoritative.
     pub autostart: bool,
+    /// 首次运行引导页是否已经走完。
+    ///
+    /// 纯界面状态：不影响注册、自启或任何授权。留着它是为了让「一键完成」之后
+    /// 不再每次启动都弹引导页 —— 用户的机器上装没装扩展，本地是**看不见**的
+    /// （Chrome 不告诉任何人），所以这件事只能由用户点一次「完成」来确认。
+    pub setup_completed: bool,
     /// Directory that holds working copies. `None` means the private agent root.
     pub workspace_root: Option<String>,
     /// Explicit local openers, evaluated before detection and the OS default.
@@ -67,6 +73,7 @@ impl Default for Settings {
             float_enabled: true,
             float_hidden_when_empty: true,
             autostart: false,
+            setup_completed: false,
             workspace_root: None,
             open_rules: Vec::new(),
             float_positions: BTreeMap::new(),

@@ -109,6 +109,67 @@ pub fn service_path(root: &Path, server: &str) -> Result<String> {
     }
     Ok(prefix)
 }
+/// 1.0 安装器写进 `config.json` 的受信任服务：内网门户 + 直连静态服务。
+///
+/// 这些是**出厂默认项**，不是用户的选择：升级上来的机器本来就信任它们，
+/// 换一套客户端不该让用户再去点一遍。所以它们随首次启动落进配置（[`ensure_defaults`]），
+/// 并且**不允许在界面上删除**（[`untrust`] 会拒绝）——「默认」如果可以被删掉，
+/// 那它只是一个预填值，而这里要的是「这台机器出厂就信任哪些服务」的稳定事实。
+pub const DEFAULT_ORIGINS: &[&str] = &[
+    "http://10.9.8.162:6111",
+    "http://10.12.1.157:8092",
+    "http://etech.stcetech.ad01.sec.com",
+    "https://etech.stcetech.ad01.sec.com",
+];
+
+/// 这个地址是不是出厂默认项（按规范 origin 比较，带不带尾斜杠、带不带路径都一样）。
+pub fn is_default_origin(raw: &str) -> bool {
+    let Ok(parsed) = Url::parse(raw) else {
+        return false;
+    };
+    let server = parsed.origin().ascii_serialization();
+    DEFAULT_ORIGINS.iter().any(|item| *item == server)
+}
+
+/// 把缺的默认服务补进 `config.json`，返回补了几条。
+///
+/// 幂等：已经是默认项的不会再写一次，所以每次启动调用它都不会改动文件。
+/// 只补不删 —— 用户自己加的服务原样保留，顺序也不动（默认项排在最前面，
+/// 与 1.0 写出来的形状一致）。
+pub fn ensure_defaults(root: &Path) -> Result<usize> {
+    let _lock = storage::lock(&root.join("config.lock"))?;
+    let mut cfg = config(root)?;
+    let mut added = Vec::new();
+    for item in DEFAULT_ORIGINS {
+        if !cfg.allowed_origins.iter().any(|origin| origin == item) {
+            added.push((*item).to_string());
+        }
+    }
+    if added.is_empty() {
+        return Ok(0);
+    }
+    let count = added.len();
+    added.extend(cfg.allowed_origins);
+    cfg.allowed_origins = added;
+    storage::write(&root.join("config.json"), &cfg)?;
+    Ok(count)
+}
+
+/// 移除一条受信任服务。默认项拒绝移除 —— 与 [`DEFAULT_ORIGINS`] 的说明一致。
+pub fn untrust(root: &Path, raw: String) -> Result<()> {
+    let parsed = Url::parse(&raw)?;
+    let server = parsed.origin().ascii_serialization();
+    origin(&server)?;
+    if DEFAULT_ORIGINS.iter().any(|item| *item == server) {
+        bail!("默认服务不能删除");
+    }
+    let _lock = storage::lock(&root.join("config.lock"))?;
+    let mut cfg = config(root)?;
+    cfg.allowed_origins.retain(|item| item != &server);
+    cfg.service_paths.remove(&server);
+    storage::write(&root.join("config.json"), &cfg)
+}
+
 pub fn trust(root: &Path, raw: String) -> Result<()> {
     let parsed = Url::parse(&raw)?;
     let server = parsed.origin().ascii_serialization();
@@ -442,6 +503,36 @@ mod tests {
     }
 
     const DEV_SOURCE: &str = "http://10.9.8.162:6111/cloudfile-updates-dev";
+
+    #[test]
+    fn the_default_services_are_seeded_once_and_cannot_be_removed() {
+        let (_dir, root) = storage::test_root();
+        // 全新机器：先是空的，补一次之后正好是出厂那几条，且默认项排在最前面。
+        assert!(config(&root).unwrap().allowed_origins.is_empty());
+        assert_eq!(ensure_defaults(&root).unwrap(), DEFAULT_ORIGINS.len());
+        let seeded: Vec<String> = DEFAULT_ORIGINS.iter().map(|item| item.to_string()).collect();
+        assert_eq!(config(&root).unwrap().allowed_origins, seeded);
+
+        // 幂等：再跑一次不写、不加（每次启动都会调它）。
+        assert_eq!(ensure_defaults(&root).unwrap(), 0);
+
+        // 用户自己加的服务保留，默认项仍在最前 —— 界面上「默认」标记依赖这个顺序。
+        trust(&root, "https://files.example.com/service".into()).unwrap();
+        let saved = config(&root).unwrap();
+        assert_eq!(&saved.allowed_origins[..DEFAULT_ORIGINS.len()], &seeded[..]);
+
+        // 默认项不能删（带不带尾斜杠都是同一项）；自己加的可以。
+        assert!(untrust(&root, format!("{}/", DEFAULT_ORIGINS[1])).is_err());
+        assert!(is_default_origin(&format!("{}/", DEFAULT_ORIGINS[0])));
+        assert!(!is_default_origin("https://files.example.com"));
+        untrust(&root, "https://files.example.com".into()).unwrap();
+        let after = config(&root).unwrap();
+        assert!(!after
+            .allowed_origins
+            .iter()
+            .any(|item| item == "https://files.example.com"));
+        assert_eq!(after.allowed_origins.len(), DEFAULT_ORIGINS.len());
+    }
 
     #[test]
     fn a_plain_http_source_is_accepted_without_any_extra_switch() {
