@@ -567,14 +567,15 @@ fn the_self_test_reports_every_check_and_exits_non_zero_when_something_is_broken
 }
 
 #[test]
-fn a_plain_http_channel_needs_the_explicit_dev_flag() {
+fn a_plain_http_channel_is_accepted_but_still_needs_a_pinned_key() {
     let sandbox = Sandbox::new();
-    // 不放行：明文源被拒绝，而且配置里什么都不会留下。
+    // 明文不再是拒绝理由 —— 内网门户只有 http。卡住的是另一条规则：
+    // 「有源、没签名公钥」的通道只服务扩展更新，Agent 自身不可升级，默认不接受。
     let refusal = sandbox.refuses(&[
         "--set-update-source",
         "http://10.9.8.162:6111/cloudfile-updates-dev",
     ]);
-    assert!(refusal.contains("https"), "{refusal}");
+    assert!(refusal.contains("pinned release key"), "{refusal}");
     assert_eq!(
         sandbox.run_json(&["--check-update"])["update_source_set"],
         false

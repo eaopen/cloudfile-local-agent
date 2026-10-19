@@ -181,33 +181,37 @@ pub fn valid_sha256(value: &str) -> bool {
 
 /// 更新源的信任策略。
 ///
-/// 正式通道只认**规范 https origin**（`https://host/dir`：不带尾斜杠、不带用户信息、
-/// 不带 fragment）。更新包是按这个 origin 解析并下载的，所以「源写成什么样」和
-/// 「允许下载到哪」必须是同一条规则，不能靠调用方各自解释。
+/// 更新源接受 **http 或 https**，而且明文 http 是**默认支持**的：内网门户
+/// （`http://etech.stcetech.ad01.sec.com`）本身只提供 http，测试通道与正式通道
+/// 都挂在它下面、只差路径一节（`/cloudfile-updates-dev` 与 `/cloudfile-updates`）。
 ///
-/// 开发通道是局域网上的**明文 http**（例如 `http://10.9.8.162:6111/cloudfile-updates-dev`）。
-/// 它必须被**显式**打开：`allow_insecure` 只能来自 config.json 的
-/// `allow_insecure_update_source` 或命令行的 `--allow-insecure-source`，
-/// **绝不会因为源本身写成 http 就自动放行**。打开时也只放宽 scheme 一项 ——
-/// 规范 origin、同源、sha256、签名校验一条都不放松。
+/// 放宽的**只有 scheme 一项**。规范 origin（不带尾斜杠 / userinfo / fragment）、
+/// 产物必须与源同源、sha256、P-256 签名，一条都没有放松 ——
+/// 「通道是不是明文」与「这个包是不是我们签的」是两件事，后者才是信任锚。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SourcePolicy {
-    /// 允许明文 http 源（仅开发通道；正式通道永远是 https）。
+    /// 历史字段。早期只有显式打开它才允许 http（`--allow-insecure-source` /
+    /// `allow_insecure_update_source`）；现在 http 已是默认行为，这个位只作为
+    /// 「这台机器当初显式开过」的审计记录保留在 config.json 与 status 输出里，
+    /// **不再参与任何判定**。
     pub allow_insecure: bool,
 }
 
 impl SourcePolicy {
-    /// 正式通道：只认 https。
+    /// 不带额外开关时的策略（http/https 都可，其余规则照旧）。
     pub const STRICT: SourcePolicy = SourcePolicy {
         allow_insecure: false,
     };
-    /// 开发通道：额外允许明文 http，其余规则不变。
+    /// 与 [`Self::STRICT`] 行为一致，保留名字只是为了旧调用点可读。
     pub const DEV: SourcePolicy = SourcePolicy {
         allow_insecure: true,
     };
 
+    /// http 与 https 都允许。这里刻意不看 `self.allow_insecure`：
+    /// 内网通道全是明文，要求显式开关只会让每一次安装都多一个能忘的参数。
     fn permits(self, scheme: &str) -> bool {
-        scheme == "https" || (self.allow_insecure && scheme == "http")
+        let _ = self;
+        scheme == "https" || scheme == "http"
     }
 
     /// 源与目标是否同一个 origin（并且是允许的 scheme）。
@@ -275,14 +279,7 @@ pub fn verify(
         bail!("release speaks an incompatible protocol version");
     }
     if !policy.valid_source(source) {
-        bail!(
-            "update source must be a canonical {} origin",
-            if policy.allow_insecure {
-                "https or http"
-            } else {
-                "https"
-            }
-        );
+        bail!("update source must be a canonical http(s) origin");
     }
     let mut seen = std::collections::BTreeSet::new();
     for artifact in &release.artifacts {
@@ -399,17 +396,10 @@ pub fn fetch_manifest(source: &str) -> Result<Vec<u8>> {
     fetch_manifest_for(SourcePolicy::STRICT, source)
 }
 
-/// 同上，但按给定策略判定 scheme（开发通道放行明文 http）。
+/// 同上，但按给定策略判定 scheme（http 与 https 都接受）。
 pub fn fetch_manifest_for(policy: SourcePolicy, source: &str) -> Result<Vec<u8>> {
     if !policy.valid_source(source) {
-        bail!(
-            "update source must be a canonical {} origin",
-            if policy.allow_insecure {
-                "https or http"
-            } else {
-                "https"
-            }
-        );
+        bail!("update source must be a canonical http(s) origin");
     }
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -663,21 +653,20 @@ mod tests {
     use p256::ecdsa::{signature::Signer, SigningKey};
 
     #[test]
-    fn the_source_policy_only_widens_the_scheme_and_nothing_else() {
-        // 正式通道：明文一律不认。
-        assert!(!SourcePolicy::STRICT.valid_source("http://10.9.8.162:6111/channel"));
-        assert!(SourcePolicy::STRICT.valid_source("https://updates.example.com/channel"));
-        // 开发通道：额外认 http，其余规则一条都不放松。
-        assert!(SourcePolicy::DEV.valid_source("http://10.9.8.162:6111/channel"));
-        assert!(SourcePolicy::DEV.valid_source("https://updates.example.com/channel"));
-        for bad in [
-            "http://10.9.8.162:6111/channel/",     // 尾斜杠 = 不是规范 origin
-            "http://user@10.9.8.162:6111/channel", // 带用户信息
-            "http://10.9.8.162:6111/channel#frag", // 带 fragment
-            "ftp://10.9.8.162:6111/channel",       // 别的 scheme
-            "10.9.8.162:6111/channel",             // 没有 scheme
-        ] {
-            assert!(!SourcePolicy::DEV.valid_source(bad), "{bad}");
+    fn the_source_policy_accepts_plain_http_but_widens_nothing_else() {
+        // 内网门户只有 http：两个策略常量都认 http 与 https，行为一致。
+        for policy in [SourcePolicy::STRICT, SourcePolicy::DEV] {
+            assert!(policy.valid_source("http://10.9.8.162:6111/channel"));
+            assert!(policy.valid_source("https://updates.example.com/channel"));
+            for bad in [
+                "http://10.9.8.162:6111/channel/",     // 尾斜杠 = 不是规范 origin
+                "http://user@10.9.8.162:6111/channel", // 带用户信息
+                "http://10.9.8.162:6111/channel#frag", // 带 fragment
+                "ftp://10.9.8.162:6111/channel",       // 别的 scheme
+                "10.9.8.162:6111/channel",             // 没有 scheme
+            ] {
+                assert!(!policy.valid_source(bad), "{bad}");
+            }
         }
     }
 

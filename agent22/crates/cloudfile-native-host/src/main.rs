@@ -56,8 +56,8 @@ Install options:
 Update options:
   --public-key <base64url>       pinned P-256 release key (required by https channels)
   --extension-dir <path>         local unpacked extension copy, for --update-extension
-  --allow-insecure-source        allow a plain-http channel (development only; recorded
-                                 in config.json and never enabled implicitly)
+  --allow-insecure-source        legacy switch; plain-http channels are allowed by default
+                                 (kept so existing install scripts keep working)
 
 Registration options:
   --extension-id <id>            Chrome extension ID to allow (32 chars, a-p)
@@ -195,8 +195,8 @@ fn run_command(args: &[String]) -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("--set-update-source requires a url"))?;
             let public_key = flag(args, "--public-key");
             let extension_dir = flag(args, "--extension-dir");
-            // 明文 http 只能靠这个开关放行，而且它会被记进 config.json ——
-            // 以后每次升级读回来的是同一条规则，不会出现「设置时宽松、升级时严格」。
+            // 明文 http 现在默认就支持（内网门户只有 http），这个开关只是为了兼容
+            // 旧脚本，取值会被记进 config.json 当审计位，但不再影响源是否被接受。
             let policy = if args.iter().any(|value| value == "--allow-insecure-source") {
                 update::SourcePolicy::DEV
             } else {
@@ -480,6 +480,7 @@ fn resolve_source(
     args: &[String],
 ) -> anyhow::Result<(String, update::SourcePolicy, Vec<update::SourceProbe>)> {
     let policy = if args.iter().any(|value| value == "--allow-insecure-source") {
+        // 兼容位：http 早已默认支持，这里只影响写进 config 的审计字段。
         update::SourcePolicy::DEV
     } else {
         update::SourcePolicy::STRICT

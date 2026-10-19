@@ -39,17 +39,10 @@ pub struct Release {
 }
 
 /// 扩展清单的地址：更新源同级、固定文件名。`policy` 与 Agent 自身升级共用同一套
-/// 判定（正式通道 https，开发通道可显式放行明文 http）。
+/// 判定（http 与 https 都接受，规范 origin + 同源一条不放松）。
 pub fn manifest_url(policy: update::SourcePolicy, agent_source: &str) -> Result<String> {
     if !policy.valid_source(agent_source) {
-        bail!(
-            "update source must be a canonical {} origin",
-            if policy.allow_insecure {
-                "https or http"
-            } else {
-                "https"
-            }
-        );
+        bail!("update source must be a canonical http(s) origin");
     }
     Ok(format!("{agent_source}/{MANIFEST_FILE}"))
 }
@@ -314,12 +307,15 @@ mod tests {
             manifest_url(update::SourcePolicy::STRICT, SOURCE).unwrap(),
             "https://updates.example.com/channel/extension-update.json"
         );
-        // 源必须是规范 https origin（与 Agent 清单同一把尺子）。
-        assert!(manifest_url(
-            update::SourcePolicy::STRICT,
-            "http://updates.example.com/channel"
-        )
-        .is_err());
+        // 源必须是规范 origin；scheme 不限（内网通道只有明文 http）。
+        assert_eq!(
+            manifest_url(
+                update::SourcePolicy::STRICT,
+                "http://updates.example.com/channel"
+            )
+            .unwrap(),
+            "http://updates.example.com/channel/extension-update.json"
+        );
         assert!(manifest_url(
             update::SourcePolicy::STRICT,
             "https://updates.example.com/channel/"
@@ -333,11 +329,14 @@ mod tests {
     }
 
     #[test]
-    fn the_dev_policy_makes_the_plain_http_channel_usable_without_widening_anything_else() {
-        // 就是开发通道的真实地址（明文 http + 通道目录）。
+    fn the_plain_http_channel_is_usable_without_widening_anything_else() {
+        // 就是测试通道的真实地址（明文 http + 通道目录）。
         const DEV_SOURCE: &str = "http://10.9.8.162:6111/cloudfile-updates-dev";
-        // 没显式放行时，这个源不可用（默认不放宽）。
-        assert!(manifest_url(update::SourcePolicy::STRICT, DEV_SOURCE).is_err());
+        // 明文 http 默认就支持：两个策略常量拿到的地址完全一样。
+        assert_eq!(
+            manifest_url(update::SourcePolicy::STRICT, DEV_SOURCE).unwrap(),
+            "http://10.9.8.162:6111/cloudfile-updates-dev/extension-update.json"
+        );
         assert_eq!(
             manifest_url(update::SourcePolicy::DEV, DEV_SOURCE).unwrap(),
             "http://10.9.8.162:6111/cloudfile-updates-dev/extension-update.json"

@@ -1,0 +1,5 @@
+# Windows 批处理入口（install.cmd / install.dev.cmd）是 **GBK + CRLF**：
+# 中文提示要能被 cmd 正确显示，换行不能被 checkout 时的自动转换改写。
+# 声明成二进制，让 git 原样存、原样取。
+*.cmd -text
+*.bat -text

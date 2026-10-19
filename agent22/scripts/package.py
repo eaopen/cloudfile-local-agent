@@ -42,8 +42,8 @@ shutil.copy2(root/'README.md',stage/'README.md')
  '  所以要用它就必须显式给 --public-key（base64url 的未压缩 P-256 点，65 字节 -> 87 字符），\n'
  '  取值可以问发版方，或用 cloudfile-release\\tools\\dev-release\\sign-agent22-release.py pubkey <私钥> 导出。\n'
  '  没有钉住的公钥时引导体会**拒绝开始安装** —— 这是刻意的：信任锚不能来自通道自己。\n\n'
- '  更新通道要求规范 origin（https://host/dir，不带尾斜杠），Agent 自身的升级必须有签名清单。\n'
- '  局域网测试通道是明文 http，需要显式加 --allow-insecure-source。\n',
+ '  更新通道要求规范 origin（http://host/dir 或 https://host/dir，不带尾斜杠），\n'
+ '  Agent 自身的升级必须有签名清单；明文 http 是默认支持的，不需要额外开关。\n',
  encoding='utf-8')
 archive=stage.with_suffix('.zip')
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:

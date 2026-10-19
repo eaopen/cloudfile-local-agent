@@ -371,8 +371,8 @@ pub fn load_update_result(root: &Path) -> Option<Value> {
 pub fn check_update(root: &Path) -> Value {
     let config = session::config(root).unwrap_or_default();
     let policy = config.update_policy();
-    // 「这台机器允许明文更新源」是一个机器级事实：没配源时也要报出来，
-    // 否则审计只能靠读 config.json 才知道有人开过这个口子。
+    // 历史审计位：早期只有显式打开才允许明文更新源。现在 http 是默认支持的，
+    // 这个字段只保留「这台机器当初显式开过」的记录，读的人不该据此判断源是否可用。
     let mut value = json!({
         "update_source_set": false,
         "update_available": false,

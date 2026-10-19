@@ -22,7 +22,10 @@ use cloudfile_core::update;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-/// 通道名（发版时改这一行，与 Go 的 install.cmd 里 `CHANNEL` 同一个作用）。
+/// 通道名。二进制只编**一份**，测试/正式的区别不在这里：
+/// `install.cmd` 走 `cloudfile-updates`（正式），`install.dev.cmd` 走
+/// `cloudfile-updates-dev`（测试），两者都通过 `--source` 传进来。
+/// 这里的内置值只服务于「双击 cloudfile-install.exe」时的默认行为 —— 必须是正式通道。
 const CHANNEL: &str = "cloudfile-updates";
 /// 主源：域名（可换域名/证书，机器上要能解析）。
 const HOST_PRIMARY: &str = "etech.stcetech.ad01.sec.com";
@@ -214,8 +217,9 @@ impl Options {
                 list
             }
             (None, _) => vec![
-                format!("https://{HOST_PRIMARY}/{CHANNEL}"),
-                format!("https://{HOST_MIRROR}/{CHANNEL}"),
+                // 内网门户只有明文 http：测试与正式通道同域名、只差路径一节。
+                format!("http://{HOST_PRIMARY}/{CHANNEL}"),
+                format!("http://{HOST_MIRROR}/{CHANNEL}"),
             ],
         }
     }

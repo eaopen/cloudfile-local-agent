@@ -25,17 +25,18 @@ pub struct Config {
     /// Local unpacked extension copy, used only to report its version.
     #[serde(default)]
     pub extension_dir: Option<String>,
-    /// 开发通道开关：允许**明文 http** 更新源（局域网测试通道）。
+    /// 历史审计位：早期只有显式打开它才允许明文 http 更新源。
     ///
-    /// 默认关闭，而且只能显式打开（config.json 里手写，或安装/配置命令行的
-    /// `--allow-insecure-source`）。写成 http 的源**不会**自动被接受 ——
-    /// 这台机器上「允许明文更新」必须是一句人写下来的话，不是一个巧合。
+    /// 现在 http 是**默认支持**的（内网门户只有 http，测试与正式通道同域名只差路径），
+    /// 这个位只在 config.json 里保留「这台机器当初显式开过」的记录，
+    /// 读回来不影响任何判定。手写 true/false 都不会改变源能否被接受。
     #[serde(default)]
     pub allow_insecure_update_source: bool,
 }
 
 impl Config {
-    /// 这台机器上更新源的信任策略。只有配置里显式打开才放行明文 http。
+    /// 这台机器上更新源的信任策略。http 与 https 都接受，其余规则（规范 origin、
+    /// 同源、sha256、签名）照旧。
     pub fn update_policy(&self) -> crate::update::SourcePolicy {
         crate::update::SourcePolicy {
             allow_insecure: self.allow_insecure_update_source,
@@ -173,14 +174,7 @@ pub fn set_update_with_policy(
     }
     if let Some(value) = &source {
         policy.valid_source(value).then_some(()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "update source must be a canonical {} origin",
-                if policy.allow_insecure {
-                    "https or http"
-                } else {
-                    "https"
-                }
-            )
+            anyhow::anyhow!("update source must be a canonical http(s) origin")
         })?;
         match &public_key {
             Some(key) => {
@@ -450,13 +444,15 @@ mod tests {
     const DEV_SOURCE: &str = "http://10.9.8.162:6111/cloudfile-updates-dev";
 
     #[test]
-    fn a_plain_http_source_needs_the_explicit_dev_policy() {
+    fn a_plain_http_source_is_accepted_without_any_extra_switch() {
         let (_dir, root) = storage::test_root();
-        // 严格策略：明文源被拒绝，而且**什么都没写进去**（不留半配置状态）。
+        // 明文源本身已经不构成拒绝理由（内网通道全是 http，见 update::SourcePolicy）。
+        // 这里失败的真正原因是「有源、没公钥」那条规则，而且**什么都没写进去**
+        // （不留半配置状态）。
         assert!(set_update(&root, Some(DEV_SOURCE.into()), None, None).is_err());
         assert!(config(&root).unwrap().update_source.is_none());
 
-        // 开发策略：允许，而且策略本身被记进配置 —— 以后升级读回来的是同一条规则。
+        // 扩展更新通道（扩展不签名）走显式策略：允许有源无公钥，并把这条决定记进配置。
         set_update_with_policy(
             &root,
             Some(DEV_SOURCE.into()),

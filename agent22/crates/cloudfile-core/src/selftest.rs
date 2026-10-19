@@ -223,28 +223,18 @@ fn login_item() -> Check {
 }
 
 /// 更新源配没配、够不够用。**只报事实**（内容对不对由 `--check-update` 回答）：
-/// 正式通道要规范 https origin，明文 http 必须由配置显式放行；放行了就说明白，
-/// 没放行也说明白「为什么不可用」，免得等真的去升级才发现。
+/// 源必须是规范 http(s) origin（http 与 https 都接受，明文是内网通道的常态）。
 fn update_state(root: &Path) -> Check {
     let config = session::config(root).unwrap_or_default();
     let policy = config.update_policy();
     let Some(source) = config.update_source else {
-        // 半配置状态也要说：开关开着但没有源，等于给自己留了一个没用的口子。
-        return Check::report(
-            "update-source",
-            if policy.allow_insecure {
-                "未配置（但允许明文源的开关是开着的）"
-            } else {
-                "未配置"
-            },
-        );
+        return Check::report("update-source", "未配置");
     };
     if !policy.valid_source(&source) {
         return Check::fail(
             "update-source",
             format!(
-                "{source} 不是规范 https origin（形如 https://host/dir），更新不可用；\
-                 开发通道请在 config.json 里把 allow_insecure_update_source 设为 true"
+                "{source} 不是规范 http(s) origin（形如 http://host/dir，不带尾斜杠），更新不可用"
             ),
         );
     }
@@ -252,16 +242,11 @@ fn update_state(root: &Path) -> Check {
     Check::report(
         "update-source",
         format!(
-            "{source}（{}{}）",
+            "{source}（{}）",
             if signed {
                 "Agent 与扩展更新均可用"
             } else {
                 "只有扩展更新可用：缺少签名公钥，Agent 自身不可升级"
-            },
-            if policy.allow_insecure {
-                "；已显式放行明文 http"
-            } else {
-                ""
             }
         ),
     )
@@ -346,15 +331,15 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_http_update_source_is_reported_as_unusable() {
+    fn a_source_that_is_not_a_canonical_origin_is_reported_as_unusable() {
         let (_dir, root) = storage::test_root();
         let host = root.join("host");
         std::fs::write(&host, b"stub").unwrap();
         let config = session::Config {
             allowed_origins: Vec::new(),
             service_paths: Default::default(),
-            // 与开发通道现状一致：明文 http + 指向清单文件而不是 origin。
-            update_source: Some("http://10.9.8.162:6111/cloudfile-updates-dev/update.json".into()),
+            // 带了尾斜杠：不是规范 origin，拼出来的清单地址会多一条斜杠。
+            update_source: Some("http://10.9.8.162:6111/cloudfile-updates-dev/".into()),
             update_public_key: None,
             extension_dir: None,
             allow_insecure_update_source: false,
@@ -365,7 +350,7 @@ mod tests {
         let check = find(&report, "update-source");
         assert!(!check["ok"].as_bool().unwrap(), "{check}");
         assert!(
-            check["detail"].as_str().unwrap().contains("https"),
+            check["detail"].as_str().unwrap().contains("规范"),
             "{check}"
         );
         assert!(!report["ok"].as_bool().unwrap());
@@ -395,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dev_switch_turns_a_plain_http_source_into_a_reportable_fact() {
+    fn a_plain_http_source_is_a_reportable_fact() {
         let (_dir, root) = storage::test_root();
         let host = root.join("host");
         std::fs::write(&host, b"stub").unwrap();
@@ -410,21 +395,21 @@ mod tests {
         let check = find(&report, "update-source");
         assert!(check["ok"].as_bool().unwrap(), "{check}");
         let detail = check["detail"].as_str().unwrap();
-        // 放行了就要**说出来**：审计第一眼要看的是「这台机器允许明文更新」。
-        assert!(detail.contains("已显式放行明文 http"), "{detail}");
+        // 明文源是常态（内网只有 http），自检要把**实际在用的地址**报出来；
+        // 没有签名公钥时说清「只有扩展能升级」。
+        assert!(detail.contains("http://10.9.8.162:6111/cloudfile-updates-dev"), "{detail}");
         assert!(detail.contains("签名公钥"), "{detail}");
 
-        // 开关开着但没有源：也要报出来（半配置状态）。
+        // 没有源时只报「未配置」；历史开关位开着也不再额外提示
+        // （它不影响任何判定，留着只会让人以为有什么口子被打开了）。
         let config = session::Config {
             allow_insecure_update_source: true,
             ..session::Config::default()
         };
         storage::write(&root.join("config.json"), &config).unwrap();
         let report = run(&root, &host);
-        assert!(find(&report, "update-source")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("开关是开着的"));
+        let detail = find(&report, "update-source")["detail"].as_str().unwrap();
+        assert_eq!(detail, "未配置", "{detail}");
     }
 
     #[test]

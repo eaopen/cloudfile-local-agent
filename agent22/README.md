@@ -74,10 +74,20 @@ cloudfile-desktop --self-test                                            # 同�
 
 更新通道的信任策略：
 
-- 正式通道要求**规范 https origin**（`https://host/dir`），且 Agent 自身的升级必须有钉住的签名公钥；包只能从同一 origin 下载，不跟随重定向。
-- 局域网开发通道是**明文 http**，必须用 `--allow-insecure-source`（或 config.json 的 `allow_insecure_update_source`）显式打开。它**只放宽 scheme 一项**：规范 origin、同源、sha256、签名、不跟随重定向一条都不放松，而且开关本身会被记进 config.json —— 升级时读回来的是「当初同意的那套规则」，不会出现「设置时宽松、升级时严格」。写成 http 的源**永远不会**被自动接受。
-- 开发通道允许「有源、没有签名公钥」：那种通道只服务**扩展更新**（扩展不签名，信任锚是同源 + sha256），此时 `--check-update` / `--status` 会明说「只有扩展更新可用，Agent 自身不可升级」。正式通道仍然要求两条都在。
-- 开没开这个口子是**可审计的**：`--status` / `--check-update` 用 `update_source_insecure_allowed` 报告它，`--self-test` 会写成「已显式放行明文 http」。
+- 源必须是**规范 origin**（`http://host/dir`，不带尾斜杠 / userinfo / fragment），
+  **http 与 https 一视同仁**：内网门户只提供 http，测试通道与正式通道挂在同一个域名下、
+  只差路径一节（`/cloudfile-updates-dev` 与 `/cloudfile-updates`）。
+- 放宽的只有 scheme 一项：包只能从同一 origin 下载、不跟随重定向、sha256 与 P-256 签名
+  一条都不放松 —— 「通道是不是明文」与「这个包是不是我们签的」是两件事。
+- `--allow-insecure-source` / `allow_insecure_update_source` 保留为**兼容位**：旧脚本带着它
+  不会报错，值仍记在 config.json 与 `--status` 的 `update_source_insecure_allowed` 里当审计，
+  但**不再影响**源能否被接受。
+- 允许「有源、没有签名公钥」的通道（显式策略下）：那种通道只服务**扩展更新**
+  （扩展不签名，信任锚是同源 + sha256），此时 `--check-update` / `--status` 会明说
+  「只有扩展更新可用，Agent 自身不可升级」。带公钥才是可升级的通道。
+- **二进制只编一份**：测试与正式用的是同一套 exe，区别只在安装入口脚本 ——
+  `install.cmd`（正式通道）与 `install.dev.cmd`（测试通道），两者只差 `CHANNEL` 一行。
+  清单按通道各生成一份（artifact URL 必须与源同源），exe 永远只有一套。
 
 规则：
 
@@ -239,8 +249,15 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 - **Windows 实机**。注册表读写、WebView2 探测与登录项的两条途径（`Run` 键写入 → 读回 → 撤销，「启动」文件夹 `.lnk` 写入 → 读回 → 撤销，含 shell 路径与文档化公式一致）已在 Windows 11 上实测；**Tauri 窗口与托盘行为、应用探测的真机回归仍未做**。
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
 - **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
-- **Rust Agent 自身的更新（一键安装的“换二进制”那一步）**。通道侧必须先提供符合 Rust 约定的清单：源写成 origin（`https://host/dir`），清单固定叫 `cloudfile-agent2-update.json`，并**用 Rust 的私钥签名**。现有开发通道里只有给 Go 侧用的 `update.json`（名字、位置、信任模型都不同），所以 `--install` / `--update` / `cloudfile-install` 走到下载那一步必然 404。这不是 Rust 侧的缺陷，而是**通道侧待补**（扩展更新不受影响，已经实测通过）。补齐后，`--install` 与引导体的端到端才算真的走完。
-- **引导体的公钥注入与发布**。`cloudfile-install` 的公钥是**打包时注入**的（`CLOUDFILE_INSTALL_PUBLIC_KEY`），默认没有 —— 这是刻意的：没有钉住的公钥就不该开始安装。发版流程需要：① 用 Rust 的私钥签一份发布清单；② 注入公钥构建 `cloudfile-install`；③ 把两者一起发到通道。`make-dev-release` 目前只处理 Go 侧的产物，Rust 通道的发布脚本还没写。
+- ~~**Rust Agent 自身的更新（一键安装的“换二进制”那一步）**~~ 已补齐：开发通道里现在有
+  `cloudfile-agent2-update.json`（签名清单）+ 两个带版本号的产物，`make-agent22-release.ps1`
+  负责编译、健康检查、写清单、签名与端到端验签。清单固定叫 `cloudfile-agent2-update.json`
+  （Go 侧的是 `update.json`，**两者互不通用**：Go 只校验 sha256，Rust 必须验签）。
+- ~~**引导体的公钥注入与发布**~~ 已补齐：`cloudfile-install` 的公钥在**打包时注入**
+  （`CLOUDFILE_INSTALL_PUBLIC_KEY`，默认没有 —— 没有钉住的公钥就不该开始安装）。
+  `cloudfile-release\tools\dev-release\make-agent22-release.ps1` 一条命令完成：
+  导出公钥 → 编译 → `--version` 健康检查 → 写清单并签名 → 注入公钥重建引导体 →
+  按清单 URL 逐个 HEAD 确认产物可达 → 真实二进制端到端验签。
 - **无感原位升级（B 类）**。不迁移旧设备身份与原任务，首次切换需重新配对。
 - **Code signing / 公证 / 运行时安装器**。当前 ZIP 是开发包。
 
