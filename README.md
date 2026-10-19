@@ -1,5 +1,13 @@
 # CloudFile Local Agent
 
+> [!CAUTION]
+> **Rust Agent2 development has MOVED — `agent-rust` is frozen (2026-10-20).**
+> **Do not make Rust Agent2 code changes or open development PRs against this branch.**
+> Continue in **[eaopen/cloudfile-local-agent2](https://github.com/eaopen/cloudfile-local-agent2)**, using its `dev` branch and feature PRs.
+> The old `agent22/` directory is **historical reference only**, not the active source of truth.
+> The outstanding migration review is [cloudfile-local-agent2 PR #7](https://github.com/eaopen/cloudfile-local-agent2/pull/7); check its merge status instead of assuming those changes are already in `dev`.
+> See [migration rules](AGENTS.md) before starting any automated changes.
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [Product home](https://github.com/eaopen/cloudfile) · [Capabilities and roadmap](https://github.com/eaopen/cloudfile/blob/main/docs/en/README.md)

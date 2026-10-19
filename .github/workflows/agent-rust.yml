@@ -1,42 +1,66 @@
-name: Rust Agent MVP
+# Legacy Rust agent-rust branch: do not build/package outdated agent22.
+# This is a post-push/PR warning gate, not a branch protection rule.
+name: Rust Agent2 migrated — frozen legacy branch
+
 on:
   push:
     branches: [agent-rust]
-    paths: ['agent22/**', '.github/workflows/agent-rust.yml']
+    paths:
+      - 'agent22/**'
+      - '.github/workflows/agent-rust.yml'
+      - 'AGENTS.md'
   pull_request:
-    paths: ['agent22/**', '.github/workflows/agent-rust.yml']
+    branches: [agent-rust]
+    paths:
+      - 'agent22/**'
+      - '.github/workflows/agent-rust.yml'
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
-  test-and-package:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: agent22
+  legacy-branch-guard:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Test locked Rust workspace
-        # Keep going after a failing crate: without this, one Windows failure
-        # hides every other target and the platform gaps need repeated pushes.
-        run: cargo test --workspace --locked --no-fail-fast
-      - name: Test Chrome pairing adapter
-        run: node --test scripts/dev-pairing.test.cjs
-      - name: Package development build
-        run: python scripts/package.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agent22-${{ matrix.os }}
-          path: agent22/dist/*.zip
-          if-no-files-found: error
+          fetch-depth: 0
+      - name: Show migration notice
+        run: |
+          echo "::notice title=Rust Agent2 migrated::Use https://github.com/eaopen/cloudfile-local-agent2 (dev + feature PRs). This agent-rust branch is archival only."
+          {
+            echo "## ⛔ Legacy Rust Agent2 branch — development moved"
+            echo 'Do not modify `agent22/` on this branch.'
+            echo "Continue in **https://github.com/eaopen/cloudfile-local-agent2**."
+            echo "Migration under review: https://github.com/eaopen/cloudfile-local-agent2/pull/7 (check merge status)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject new legacy Rust source changes
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            BASE="$PR_BASE"
+            HEAD="$PR_HEAD"
+          else
+            BASE="$PUSH_BASE"
+            HEAD="$GITHUB_SHA"
+          fi
+          if [[ ! "$BASE" =~ ^[0-9a-f]{40}$ ]] || [[ "$BASE" =~ ^0+$ ]] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE="$(git rev-parse "$HEAD^")"
+          fi
+          git diff --name-only "$BASE" "$HEAD" > /tmp/changed-files.txt
+          # Only legacy README and AI-agent migration notice edits remain allowed.
+          if grep -E '^agent22/' /tmp/changed-files.txt | grep -Ev '^agent22/(README\.md|AGENTS\.md)$' > /tmp/forbidden-agent-files.txt; then
+            echo "::error title=Wrong repository::Rust Agent2 source development moved to eaopen/cloudfile-local-agent2. These changes belong in the new repository, not agent-rust."
+            cat /tmp/forbidden-agent-files.txt
+            exit 1
+          fi
+          echo "No changes to frozen legacy Rust Agent2 source files."

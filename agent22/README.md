@@ -1,6 +1,13 @@
 # CloudFile Agent 2.2 · MVP
 
-开发分支 `agent-rust`，全新 Rust + Tauri v2 实现。
+> [!CAUTION]
+> **⛔ 停止在这里开发 Rust Agent2（迁移公告：2026-10-20）。**
+> 本目录属于旧仓 `eaopen/cloudfile-local-agent@agent-rust`，**只读历史参考**；不要再在这里修 Bug、加功能、提交 Rust 代码或打包发布。
+> **新的唯一代码入口：[eaopen/cloudfile-local-agent2](https://github.com/eaopen/cloudfile-local-agent2)，目标分支 `dev`。**
+> 历史修改迁入新仓的审查入口：[PR #7](https://github.com/eaopen/cloudfile-local-agent2/pull/7)；请确认合并状态后再判断新仓包含哪些修改。
+> AI Coding 必须改用新仓，并遵循新仓的 [AGENTS.md](https://github.com/eaopen/cloudfile-local-agent2/blob/dev/AGENTS.md)；本目录的 [AGENTS.md](AGENTS.md) 也明确禁止后续开发。
+
+历史开发分支 `agent-rust` 曾用于 Rust + Tauri v2 原型；**现已冻结，后续开发以新仓为准**。
 Chrome Native Messaging 与原有 CloudFile Hub/Server 保留为协议边界。
 历史参考基线：`e33d380f7e7ae65efdf39bcb0dec091e6d13b755`；不依赖 Go/.NET/Swift 运行时。
 

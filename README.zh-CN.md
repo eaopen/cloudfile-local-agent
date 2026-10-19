@@ -1,5 +1,12 @@
 # CloudFile Local Agent
 
+> [!CAUTION]
+> **Rust Agent2 已迁移，本分支 `agent-rust` 自 2026-10-20 起停止开发。**
+> **请勿继续在此分支或 `agent22/` 目录修改、提交、发版，也不要把开发 PR 指向这里。**
+> Rust Agent2 唯一后续开发仓库为 **[eaopen/cloudfile-local-agent2](https://github.com/eaopen/cloudfile-local-agent2)**，以其 `dev` 为主线，使用新仓 feature 分支和 PR。
+> 此处 `agent22/` 仅供历史查阅，不代表现行 V2 实现。迁移中的变更见 [新仓 PR #7](https://github.com/eaopen/cloudfile-local-agent2/pull/7)（是否已合入需核对 PR 状态）。
+> AI Coding 请先阅读本分支的 [AGENTS.md](AGENTS.md)。
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [产品中心](https://github.com/eaopen/cloudfile) · [产品能力与路线](https://github.com/eaopen/cloudfile/blob/main/docs/zh-CN/README.md)
