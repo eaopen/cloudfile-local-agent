@@ -93,7 +93,9 @@ fn main() {
 
 fn run_command(args: &[String]) -> anyhow::Result<()> {
     let root = root()?;
-    let host = flag(args, "--host-name").unwrap_or_else(|| hostreg::DEV_HOST.to_string());
+    // 默认就是本平台的 Host（Windows 上是 `com.cloudfile.current_agent`，见 hostreg::HOST）。
+    // `--host-name` 只用于显式覆盖（例如按开发身份另注册一份、或清理旧的 dev host）。
+    let host = flag(args, "--host-name").unwrap_or_else(|| hostreg::HOST.to_string());
     let command = args[0].as_str();
     match command {
         "--version" => println!("{}", cloudfile_core::VERSION),

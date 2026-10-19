@@ -38,7 +38,10 @@ pub const VERSION: &str = match option_env!("CLOUDFILE_AGENT2_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),
 };
-pub const HOST: &str = "com.cloudfile.agent22.dev";
+/// 本平台注册的 Native Messaging Host ID。定义在 `hostreg`，这里只做转出 ——
+/// 「注册用哪个名字」和「自带检查查哪个名字」必须是同一个常量，否则自检会在
+/// 一个根本没被注册的 host 上给出「未注册」，而扩展其实连得上。
+pub const HOST: &str = hostreg::HOST;
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -17,7 +17,7 @@ Chrome Native Messaging 与原有 CloudFile Hub/Server 保留为协议边界。
 - **大文件 CDC 分块上传（可选，默认关闭）**：≥16 MiB 的快照先按 Seafile 原生 CDC（Rabin，6/8/10 MiB）切分，用服务端已存在的原生块做签名 missing-block 计划；只有确实节省 ≥4 MiB 且复用 ≥25% 时才改走 `*-block-plan` / `*-block-stage` / `*-block-publish`，否则仍用已验证的全量传输。独占与普通本地编辑两条路径共用同一套计划与回退逻辑。
 - **本机安装、升级与回退均由自带程序完成**：`cloudfile-native-host` 同时是 CLI，注册 Host、登录项、下载校验、版本目录切换、回退与清理都不需要目标机器安装 Python 或 Rust 工具链。
 - 密钥存储在 macOS Keychain / Windows Credential Manager；采用 Rust P-256 签名，不依赖旧 Agent。当前是系统保护的可读密钥，不宣称 CNG/硬件不可导出密钥。
-- 独立用户目录 `CloudFileAgent22`、开发 Host `com.cloudfile.agent22.dev`。
+- 独立用户目录 `CloudFileAgent22`、**按平台**注册的 Host：Windows 上是 `com.cloudfile.current_agent`，其它平台是开发身份 `com.cloudfile.agent22.dev`（见下面「Host 名」一段）。
 
 本地应用 Ctrl/Cmd+S 保存到磁盘后，普通编辑由 Agent 自动观察工作副本并上传；独占编辑不会自动上传，必须由用户在任务中心显式提交。发生网络中断、冲突或未确认回执时暂停或保持待确认状态，保留工作副本与原上传快照；不会盲目自动重发。
 当前单文件上限与现有服务端一致，为 128 MiB。
@@ -164,8 +164,22 @@ cargo build -p cloudfile-native-host --locked
 ```
 
 也可以直接在任务中心的“Chrome 开发注册与升级”里填扩展 ID 注册，不必用命令行。
-注册只影响当前用户的开发 Host，不替换旧 Host；若该 Host 已被其他程序注册，会先报错，
-由用户确认后才备份并接管。
+注册只影响当前用户的 Host，不替换旧 Host；若该 Host 已被其他程序注册，会先报错，
+由用户确认后才备份并接管（原 Manifest 存为 `<host>.previous.json`，`--rollback-host` 可还原）。
+
+### Host 名（为什么 Windows 上是 `com.cloudfile.current_agent`）
+
+扩展在 Windows 上**只**向 `com.cloudfile.current_agent` 发消息，且它的用例明确禁止回落到其它 Host
+（`cloudfile-chrome-extension/tests/agent2-routing.cjs`：`Windows never probes Go Hosts when its fixed
+Host is missing`、`a future Windows Go controller uses the same Host ID`）。也就是说 Windows 上的控制器
+**只有一个槽位**，谁当控制器谁就得占它——名字写错，扩展只会回「本机 Agent 未就绪」，与 Agent 装没装无关。
+
+因此 `hostreg::HOST` 按平台取值：Windows → `com.cloudfile.current_agent`，其它平台 → `com.cloudfile.agent22.dev`
+（macOS 上扩展找的是 Go 的 `com.cloudfile.agent2`，Rust MVP 不去抢）。Windows 上占这个槽位必须是**显式**动作：
+`--register-host` 不 overwrite 别人的注册，需要 `--takeover`，且先备份、可还原。
+
+清单里的 `path` 写**普通绝对路径**：`canonicalize()` 在 Windows 上给出的 `\\?\` verbatim 前缀会被剥掉，
+与 Go 侧写出的形状一致（UNC 的 `\\?\UNC\...` 保留，剥了会变成非法路径）。
 
 开发扩展是共享扩展的隔离副本；连接步骤：
 
@@ -211,7 +225,7 @@ GitHub Actions 对 macOS / Windows 分别执行 Rust 与配对脚本测试并生
 
 ## 验证状态
 
-已覆盖：`cargo test --workspace --locked`（**156 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`；另有 4 项 `#[cfg(unix)]` 用例只在 CI 的 macOS 上跑——权限判据在 Windows 上是刻意的 no-op，所以它的 POSIX 行为只能在那里验）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
+已覆盖：`cargo test --workspace --locked`（**158 项**在本机 Windows 11 实测全绿，含 2 项需要外部条件的 `#[ignore]`：一条往系统凭据库写临时凭据，一条往真实 shell 写一个临时 `.lnk`；另有 4 项 `#[cfg(unix)]` 用例只在 CI 的 macOS 上跑——权限判据在 Windows 上是刻意的 no-op，所以它的 POSIX 行为只能在那里验）、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all --check`。
 引导体与 `--install` 各有确定性用例：引导体那边起回环 HTTP 服务验「主源可用则备源一次不探、`--dry-run` 不建目录也不下载、缺公钥或公钥非法时**停在下载之前**、裸开关连同取值一起转发」；`--install` 那边验「主备选择、失败时列出每个地址的原因、可用的地址写回配置」。`CLOUDFILE_AGENT2_HOME` 的覆盖（含相对路径被拒）也有用例。
 
 安装器（`--install`）的主备源行为有确定性用例：测试里起一个回环 HTTP 服务当主源、把一个没人监听的端口当备源，断言「只探测了主源、备源一次没碰、可用的地址被写回 config.json、退出码 0」；另两条覆盖「没给地址就拒绝且不写任何配置」与「两个都不通时报出两个地址」。对真实开发通道跑 `--install` 验证了**失败路径**：主源（域名）被网络拦截、备源返回 404（通道上还没有 Rust 约定的清单），报告如实列出两条原因与各自地址。
