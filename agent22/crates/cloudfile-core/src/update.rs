@@ -27,6 +27,15 @@ pub const JOURNAL_VERSION: u32 = 1;
 const MAX_RELEASE_BYTES: usize = 64 * 1024;
 const DOMAIN: &str = "cloudfile.agent2.release.v1";
 
+/// 通道上的清单文件名（域名源）。
+pub const MANIFEST_FILE: &str = "cloudfile-agent2-update.json";
+/// 通道上的清单文件名（**IP 直连源**）。
+///
+/// 清单里的 artifact URL 必须与更新源同源，而 origin 里含 host —— 域名源那份清单
+/// 里写的是 `<域名>/...`，把源换成 IP 之后即使用同一份文件，也会被同源校验拒掉。
+/// 所以 IP 源必须有自己的一份清单（同一批产物、不同的 URL 前缀、各自签名）。
+pub const MANIFEST_FILE_IP: &str = "cloudfile-agent2-update.ip.json";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Binary {
     NativeHost,
@@ -241,6 +250,24 @@ pub fn valid_source(source: &str) -> bool {
     SourcePolicy::STRICT.valid_source(source)
 }
 
+/// 这个源该读哪一份清单：**域名源与 IP 源各一份**。
+///
+/// 判据是 host 字面量是不是 IP，不看调用方传了什么参数 —— 主源（域名）与备用源
+/// （直连静态服务的 IP）在 install.cmd 里被同时传给引导体，两边的清单名必须能自动
+/// 对上，否则「主源不通时回落 IP」这条路上会在拉清单那一步就失败。
+pub fn manifest_file(source: &str) -> &'static str {
+    match url::Url::parse(source) {
+        Ok(url)
+            if url
+                .host()
+                .is_some_and(|host| matches!(host, url::Host::Ipv4(_) | url::Host::Ipv6(_))) =>
+        {
+            MANIFEST_FILE_IP
+        }
+        _ => MANIFEST_FILE,
+    }
+}
+
 /// Decodes the pinned public key: base64url of the 65-byte uncompressed point.
 pub fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
     let bytes = B64
@@ -406,7 +433,7 @@ pub fn fetch_manifest_for(policy: SourcePolicy, source: &str) -> Result<Vec<u8>>
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
     let response = client
-        .get(format!("{source}/cloudfile-agent2-update.json"))
+        .get(format!("{source}/{}", manifest_file(source)))
         .send()
         .context("update manifest request failed")?;
     if response.status() != 200 {
@@ -668,6 +695,24 @@ mod tests {
                 assert!(!policy.valid_source(bad), "{bad}");
             }
         }
+    }
+
+    #[test]
+    fn an_ip_source_reads_its_own_manifest() {
+        // 域名源与 IP 源必须读**不同**的清单：清单里的 artifact URL 含 host，
+        // 同源校验会把「IP 源 + 域名清单」直接拒掉。所以这条规则不能靠调用方记得传参。
+        assert_eq!(
+            manifest_file("http://etech.stcetech.ad01.sec.com/cloudfile-updates-dev"),
+            MANIFEST_FILE
+        );
+        assert_eq!(
+            manifest_file("http://10.9.8.162:6111/cloudfile-updates-dev"),
+            MANIFEST_FILE_IP
+        );
+        // IPv6 字面量也算 IP 源。
+        assert_eq!(manifest_file("http://[::1]:8080/channel"), MANIFEST_FILE_IP);
+        // 解析不了的源不 panic：回落默认名，真正的拒绝发生在 valid_source 那一步。
+        assert_eq!(manifest_file("not a url"), MANIFEST_FILE);
     }
 
     #[test]

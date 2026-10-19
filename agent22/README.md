@@ -99,13 +99,17 @@ cloudfile-desktop --self-test                                            # 同�
 
 ### 发版（Rust 通道）
 
-Rust 与 Go 共用一台静态服务、同一个通道目录，但**产物与清单都不通用**：Go 的更新只校验 sha256，Rust 必须验签（`update::verify` 是硬策略，不会降级接受）。所以两条链路各自发各自的：
+**Agent2 现在只有 Rust 这一条线**：Go 版（`dev` 分支）已停更，`agent1` 是 1.0 生产版，两者都不再发布；测试通道目录里只留 Rust 的产物。
+
+Rust 必须验签（`update::verify` 是硬策略，不会降级接受）：
 
 | | 清单 | 产物 | 信任锚 |
 |---|---|---|---|
-| Go Agent2 | `update.json` | `cloudfile-local-agent-<v>-dev.exe` | sha256 |
-| **Rust Agent22** | **`cloudfile-agent2-update.json`** | **`cloudfile-native-host-<v>.exe` / `cloudfile-desktop-<v>.exe`** | **钉住的 P-256 公钥** |
-| 扩展（两边共用） | `extension-update.json` | `cloudfile-local-session-receiver-<v>-dev.zip` | 同源 + sha256 |
+| **Rust Agent22（主源，域名）** | **`cloudfile-agent2-update.json`** | **`cloudfile-native-host-<v>.exe` / `cloudfile-desktop-<v>.exe`** | **钉住的 P-256 公钥** |
+| **Rust Agent22（备用源，IP 直连）** | **`cloudfile-agent2-update.ip.json`** | 同一批产物 | 同上 |
+| 扩展 | `extension-update.json` | `cloudfile-local-session-receiver-<v>-dev.zip` | 同源 + sha256 |
+
+两份清单是**必须**的：清单里的 artifact URL 是绝对地址，`verify` 要求它与更新源同源；源从域名换成 IP 就是换了 origin，复用域名那份会被拒（`release artifact does not come from the update source`）。Rust 按 host 是不是 IP 自动选文件名（`update::manifest_file`），调用方不用传参。
 
 版本号**在编译期注入**，不改仓库里任何文件（等价于 Go 的 `-ldflags -X`）：
 
@@ -250,9 +254,9 @@ Windows 侧的注册表与登录项测试（`hostreg` / `autostart` / `update` �
 - **真实服务端联调**。自动上传、独占提交与 CDC 仍只对着 mock Hub 验证过。
 - **浏览器扩展联动的完整链路**。`--status` / `capabilities` 的字段已对齐，但**没有在真实 Chrome 里跑过**：安装、加载、`chrome.runtime.reload()` 之后的实际行为都还没验证。扩展自更新的**文件侧**已用开发通道里真实发布的包验证过（摘要与清单一致、9 个条目含 `icons/` 子目录全部解出、版本核对、重复安装幂等），**下载侧（`--update-extension` 走网络）未验证**：见下面那条关于 http 通道的说明。
 - ~~**Rust Agent 自身的更新（一键安装的“换二进制”那一步）**~~ 已补齐：开发通道里现在有
-  `cloudfile-agent2-update.json`（签名清单）+ 两个带版本号的产物，`make-agent22-release.ps1`
-  负责编译、健康检查、写清单、签名与端到端验签。清单固定叫 `cloudfile-agent2-update.json`
-  （Go 侧的是 `update.json`，**两者互不通用**：Go 只校验 sha256，Rust 必须验签）。
+  `cloudfile-agent2-update.json`（域名源）与 `cloudfile-agent2-update.ip.json`（IP 直连源）
+  两份签名清单 + 两个带版本号的产物，`make-agent22-release.ps1` 负责编译、健康检查、
+  逐源写清单、签名与端到端验签。
 - ~~**引导体的公钥注入与发布**~~ 已补齐：`cloudfile-install` 的公钥在**打包时注入**
   （`CLOUDFILE_INSTALL_PUBLIC_KEY`，默认没有 —— 没有钉住的公钥就不该开始安装）。
   `cloudfile-release\tools\dev-release\make-agent22-release.ps1` 一条命令完成：

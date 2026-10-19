@@ -19,7 +19,10 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
-/// 与 `cloudfile-agent2-update.json` 同级、固定名字。
+/// 与 Agent 清单同级、固定名字。
+///
+/// 与 Agent 清单不同，扩展清单**只有一份**：`zip_url` 是相对路径（相对清单地址解析），
+/// 所以域名源与 IP 源可以共用同一个文件 —— 不用像 Agent 那样按 host 分两份。
 pub const MANIFEST_FILE: &str = "extension-update.json";
 /// 清单本身很小：1 MiB 足够，且能挡住往内存里灌垃圾。
 const MAX_MANIFEST_BYTES: usize = 1 << 20;
