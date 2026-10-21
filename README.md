@@ -4,7 +4,16 @@
 
 > 用途：说明 CloudFile 本地查看/编辑 Native Messaging Host 的构建、配置和安全边界
 > 适用版本：Seafile CE 14 扩展版；Agent 协议 `cloudfile-local/v2`
-> 当前状态：验证中；代码与单元测试存在，跨平台签名发布包和全链路验收待完成
+> 当前状态：**已停止开发（2026-10-21）**。唯一维护的桌面客户端是 Rust 版
+> [`cloudfile-local-agent2`](../cloudfile-local-agent2)。
+
+> **本仓不再接收功能改动。** `cloudfile-local/v2` 会话文件协议与
+> `POST /api/v2.1/cloudfile/agent-sessions/claim/` 领取流程已随 V2 授权收敛退役：
+> Hub 只签发 `cloudfile-open://v2/open?...` 的 scoped JWT，Go fileserver 的
+> `/seafhttp/cf-edit/v1/*` 直接消费该票据，服务端不再有 claim 端点和会话表。
+> 因此当前代码可以构建，但无法完成一次打开或写回；本仓只作历史追溯。
+> 新功能、缺陷修复与协议变更请提交到 `cloudfile-local-agent2`。
+> 仓内 `agent22/` 是 Rust 版在迁移期的副本，同样不再作为开发入口。
 
 一个 Go 绿色 Native Messaging Host，用于领取 CloudFile 的短时会话、在隔离工作区下载文件，并交给本机已安装的软件查看或编辑。
 
